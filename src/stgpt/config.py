@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def _expand_env(value: Any) -> Any:
@@ -107,6 +107,25 @@ class TrainingConfig(BaseModel):
         return Path(os.path.expandvars(self.output_dir)).expanduser()
 
 
+class SplitConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    strategy: Literal["spatial_block"] = "spatial_block"
+    train_fraction: float = Field(default=0.70, ge=0.0, le=1.0)
+    val_fraction: float = Field(default=0.15, ge=0.0, le=1.0)
+    test_fraction: float = Field(default=0.15, ge=0.0, le=1.0)
+    seed: int | None = None
+
+    @model_validator(mode="after")
+    def _validate_fraction_sum(self) -> SplitConfig:
+        total = self.train_fraction + self.val_fraction + self.test_fraction
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError("split fractions must sum to 1.0")
+        if self.train_fraction <= 0.0:
+            raise ValueError("split.train_fraction must be positive")
+        return self
+
+
 class StGPTConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -114,6 +133,7 @@ class StGPTConfig(BaseModel):
     data: DataConfig = Field(default_factory=DataConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
     training: TrainingConfig = Field(default_factory=TrainingConfig)
+    split: SplitConfig = Field(default_factory=SplitConfig)
 
     @classmethod
     def from_file(cls, path: str | Path, *, preset: str | None = None) -> StGPTConfig:

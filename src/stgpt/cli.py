@@ -13,6 +13,7 @@ from . import __version__
 from .config import StGPTConfig
 from .data import build_training_manifest
 from .inference import embed_anndata, export_spatho_summaries, write_embeddings_table
+from .qc import validate_data
 from .training import train as train_model
 
 app = typer.Typer(help="stGPT image-gene spatial transcriptomics prototype.")
@@ -36,6 +37,16 @@ def prepare_xenium(config: Annotated[Path, typer.Option("--config", "-c", exists
     cfg = StGPTConfig.from_file(config)
     manifest = build_training_manifest(cfg)
     typer.echo(json.dumps(manifest, indent=2))
+
+
+@app.command("validate-data")
+def validate_data_command(
+    config: Annotated[Path, typer.Option("--config", "-c", exists=True)],
+    output: Annotated[Path | None, typer.Option("--output", "-o")] = None,
+) -> None:
+    cfg = StGPTConfig.from_file(config)
+    result = validate_data(cfg, output_dir=output)
+    typer.echo(json.dumps(result, indent=2))
 
 
 @app.command()

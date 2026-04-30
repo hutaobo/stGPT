@@ -35,3 +35,5 @@ training:
     assert str(tmp_path) in cfg.data.output_dir
     assert cfg.training.device == "cpu"
     assert cfg.training.max_steps == 2
+    assert cfg.split.strategy == "spatial_block"
+    assert cfg.split.train_fraction == 0.70

@@ -65,6 +65,7 @@ These methods may not all use H&E as a core modality, but they define the baseli
 ## Development Priorities
 
 - Build robust Xenium ingestion and validation first: coordinates, gene names, panel metadata, cell IDs, optional morphology assets, and reproducible AnnData export.
+- Treat `stgpt validate-data` as the first real-data gate: it should write a case manifest, QC reports, and deterministic splits before any paper-facing training run.
 - Make patch and structure manifests reproducible: every embedding should be traceable to image coordinates, patch extraction parameters, and any spatho-derived structure labels.
 - Implement baseline comparisons against the closest method families: scGPT-spatial-style gene/spatial objectives, STPath/STORM-style masked expression prediction, ST-Align/OmiCLIP-style contrastive alignment, and xMINT-style Xenium imputation.
 - Treat objective ablations as required evidence: gene-only, image-only, spatial-only, image+gene, image+gene+spatial, and full image+gene+spatial+structure variants.
@@ -86,6 +87,7 @@ These methods may not all use H&E as a core modality, but they define the baseli
 The next development phase should be considered successful when `stGPT` can:
 
 - load a real Xenium case through the optional adapter
+- validate the case with `stgpt validate-data` and inspect the QC report before training
 - attach reproducible H&E patch and structure/context metadata
 - train the image-gene Transformer with reconstruction and contrastive objectives
 - export cell or region embeddings with enough metadata for downstream analysis

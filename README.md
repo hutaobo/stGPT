@@ -25,6 +25,24 @@ For real Xenium adapters:
 python -m pip install -e ".[dev,xenium,spatho]"
 ```
 
+When using the checked-out development environment on Windows, run tests through the project virtual environment:
+
+```bash
+.\.venv\Scripts\python.exe -m pytest
+```
+
+The system Python must have the editable package and dependencies installed before `python -m pytest` will work.
+
+## Data/QC Validation
+
+Before training on real data, validate the data contract and inspect the generated QC report:
+
+```bash
+stgpt validate-data --config configs/atera_wta_breast.yaml --output outputs/atera_wta_breast/qc
+```
+
+This writes `case_manifest.json`, `qc_report.json`, `qc_report.md`, and `splits.csv`. Training should only proceed after fatal QC errors are resolved.
+
 ## Smoke Training
 
 ```bash
@@ -44,6 +62,7 @@ set STGPT_XENIUM_ROOT=Y:\long\10X_datasets\Xenium\Atera\WTA_Preview_FFPE_Breast_
 set STGPT_SPATHO_RUN_ROOT=D:\path\to\spatho_run
 set STGPT_OUTPUT_ROOT=D:\path\to\stgpt_outputs
 stgpt prepare-xenium --config configs\atera_wta_breast.yaml
+stgpt validate-data --config configs\atera_wta_breast.yaml --output %STGPT_OUTPUT_ROOT%\atera_wta_breast\qc
 stgpt train --config configs\atera_wta_breast.yaml --preset pdc
 ```
 
