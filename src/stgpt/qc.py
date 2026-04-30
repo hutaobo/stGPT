@@ -60,7 +60,9 @@ def build_case_manifest(case: TrainingCase, config: StGPTConfig, output_dir: Pat
     spatial = _spatial_array(case, config)
     patch_table = case.patch_table.copy()
     gene_names = _gene_names(case, config)
+    panel_genes = _panel_genes(config)
     structure_counts = _structure_counts(case, config)
+    patch_provenance = _patch_provenance(patch_table)
     return {
         "case_name": config.case_name,
         "mode": config.data.mode,
@@ -77,6 +79,7 @@ def build_case_manifest(case: TrainingCase, config: StGPTConfig, output_dir: Pat
         "n_genes": int(adata.n_vars),
         "gene_name_key": config.data.gene_name_key,
         "duplicate_gene_count": int(pd.Series(gene_names).duplicated().sum()),
+        "panel": _panel_metrics(gene_names, panel_genes),
         "spatial_key": config.data.spatial_key,
         "has_spatial": spatial is not None,
         "spatial_bounds": _spatial_bounds(spatial),
@@ -84,11 +87,13 @@ def build_case_manifest(case: TrainingCase, config: StGPTConfig, output_dir: Pat
         "patch_count": int(len(patch_table)),
         "patch_cell_count": int(patch_table["cell_id"].dropna().astype(str).nunique()) if "cell_id" in patch_table else 0,
         "patch_structure_count": int(patch_table["structure_id"].dropna().nunique()) if "structure_id" in patch_table else 0,
+        "patch_provenance": patch_provenance,
         "structure_key": config.data.structure_key,
         "include_structure_context": bool(config.data.include_structure_context),
         "structure_counts": structure_counts,
         "split": {
             "strategy": config.split.strategy,
+            "group_key": config.split.group_key,
             "train_fraction": float(config.split.train_fraction),
             "val_fraction": float(config.split.val_fraction),
             "test_fraction": float(config.split.test_fraction),
@@ -119,6 +124,13 @@ def build_qc_report(case: TrainingCase, config: StGPTConfig, manifest: dict[str,
     if duplicate_gene_count:
         warnings.append(f"{duplicate_gene_count} duplicate gene names were found before vocabulary uniquification.")
 
+    panel = manifest["panel"]
+    if panel["configured"]:
+        if panel["missing_from_data_count"]:
+            warnings.append(f"{panel['missing_from_data_count']} configured panel genes are missing from the data matrix.")
+        if panel["outside_panel_count"]:
+            warnings.append(f"{panel['outside_panel_count']} data genes are outside the configured panel.")
+
     cell_ids = _cell_ids(case)
     patch_cell_ids = patch_table["cell_id"].dropna().astype(str) if "cell_id" in patch_table else pd.Series(dtype=str)
     patch_cell_coverage = float(patch_cell_ids[patch_cell_ids.isin(cell_ids)].nunique() / max(1, len(cell_ids)))
@@ -133,6 +145,11 @@ def build_qc_report(case: TrainingCase, config: StGPTConfig, manifest: dict[str,
     missing_image_count = _missing_image_count(patch_table)
     if missing_image_count:
         warnings.append(f"{missing_image_count} patch rows point to missing image files.")
+    patch_provenance = manifest["patch_provenance"]
+    if len(patch_table) > 0 and not patch_provenance["has_coordinates"]:
+        warnings.append("Patch manifest lacks explicit patch coordinate columns; registration traceability is limited.")
+    if len(patch_table) > 0 and not patch_provenance["has_registration_metadata"]:
+        warnings.append("Patch manifest lacks registration or transform metadata; H&E alignment assumptions should be documented.")
 
     structure_coverage = _structure_coverage(case, config)
     if config.data.include_structure_context and structure_coverage < 1.0:
@@ -152,51 +169,37 @@ def build_qc_report(case: TrainingCase, config: StGPTConfig, manifest: dict[str,
             "missing_spatial_count": int(missing_spatial_count),
             "structure_assignment_coverage": structure_coverage,
             "matrix_density": manifest["matrix_density"],
+            "panel_missing_from_data_count": int(panel["missing_from_data_count"]),
+            "panel_outside_panel_count": int(panel["outside_panel_count"]),
         },
     }
 
 
 def make_splits(case: TrainingCase, config: StGPTConfig) -> pd.DataFrame:
-    if config.split.strategy != "spatial_block":  # pragma: no cover - pydantic prevents this
-        raise ValueError(f"Unsupported split strategy: {config.split.strategy}")
     adata = case.adata
     cell_ids = _cell_ids(case)
-    spatial = _spatial_array(case, config)
     n_cells = int(adata.n_obs)
     if n_cells == 0:
         return pd.DataFrame(columns=["cell_id", "split", "split_strategy", "block_id"])
-    if spatial is None:
-        order = np.arange(n_cells)
-        block_ids = np.asarray([f"idx_{idx:04d}" for idx in order], dtype=object)
-    else:
-        coords = np.asarray(spatial[:, :2], dtype=np.float64)
-        coords[~np.isfinite(coords)] = 0.0
-        n_bins = max(2, min(32, int(np.ceil(np.sqrt(max(4.0, n_cells / 4.0))))))
-        x_bin = _rank_bins(coords[:, 0], n_bins)
-        y_bin = _rank_bins(coords[:, 1], n_bins)
-        block_ids = np.asarray([f"x{int(x)}_y{int(y)}" for x, y in zip(x_bin, y_bin, strict=False)], dtype=object)
-
-    rng = np.random.default_rng(_resolve_split_seed(config))
-    blocks = np.asarray(sorted(pd.unique(block_ids)), dtype=object)
-    rng.shuffle(blocks)
-    block_sizes = {block: int((block_ids == block).sum()) for block in blocks}
-
-    assignment: dict[str, str] = {}
-    cumulative = 0.0
-    train_cut = n_cells * float(config.split.train_fraction)
-    val_cut = n_cells * float(config.split.train_fraction + config.split.val_fraction)
-    for block in blocks:
-        size = block_sizes[block]
-        midpoint = cumulative + size / 2.0
-        if midpoint < train_cut:
-            split = "train"
-        elif midpoint < val_cut:
-            split = "val"
+    if config.split.strategy == "group_holdout":
+        if not config.split.group_key or config.split.group_key not in adata.obs.columns:
+            raise ValueError("split.strategy='group_holdout' requires split.group_key to name an AnnData obs column.")
+        block_ids = adata.obs[config.split.group_key].fillna("missing").astype(str).to_numpy(dtype=object)
+    elif config.split.strategy == "spatial_block":
+        spatial = _spatial_array(case, config)
+        if spatial is None:
+            order = np.arange(n_cells)
+            block_ids = np.asarray([f"idx_{idx:04d}" for idx in order], dtype=object)
         else:
-            split = "test"
-        assignment[str(block)] = split
-        cumulative += size
-
+            coords = np.asarray(spatial[:, :2], dtype=np.float64)
+            coords[~np.isfinite(coords)] = 0.0
+            n_bins = max(2, min(32, int(np.ceil(np.sqrt(max(4.0, n_cells / 4.0))))))
+            x_bin = _rank_bins(coords[:, 0], n_bins)
+            y_bin = _rank_bins(coords[:, 1], n_bins)
+            block_ids = np.asarray([f"x{int(x)}_y{int(y)}" for x, y in zip(x_bin, y_bin, strict=False)], dtype=object)
+    else:
+        raise ValueError(f"Unsupported split strategy: {config.split.strategy}")
+    assignment = _assign_blocks_to_splits(block_ids, config)
     split_values = [assignment[str(block)] for block in block_ids]
     return pd.DataFrame(
         {
@@ -223,6 +226,10 @@ def render_qc_markdown(report: dict[str, Any], manifest: dict[str, Any]) -> str:
         f"- Patch rows: {manifest['patch_count']}",
         f"- Patch cell coverage: {report['metrics']['patch_cell_coverage']:.1%}",
         f"- Structure assignment coverage: {report['metrics']['structure_assignment_coverage']:.1%}",
+        f"- Panel genes configured: {manifest['panel']['panel_gene_count']}",
+        f"- Panel genes missing from data: {report['metrics']['panel_missing_from_data_count']}",
+        f"- Patch coordinate columns: {', '.join(manifest['patch_provenance']['coordinate_columns']) or 'None'}",
+        f"- Patch registration columns: {', '.join(manifest['patch_provenance']['registration_columns']) or 'None'}",
         "",
         "## Fatal Errors",
         "",
@@ -235,6 +242,7 @@ def render_qc_markdown(report: dict[str, Any], manifest: dict[str, Any]) -> str:
     lines.extend(
         [
             f"- Strategy: `{split['strategy']}`",
+            f"- Group key: `{split['group_key']}`",
             f"- Fractions: train={split['train_fraction']:.2f}, val={split['val_fraction']:.2f}, test={split['test_fraction']:.2f}",
             f"- Seed: {split['seed']}",
             "",
@@ -297,6 +305,94 @@ def _structure_counts(case: TrainingCase, config: StGPTConfig) -> dict[str, int]
     return {str(key): int(value) for key, value in counts.items()}
 
 
+def _panel_genes(config: StGPTConfig) -> list[str]:
+    genes: list[str] = []
+    if config.data.panel_genes:
+        genes.extend(str(item) for item in config.data.panel_genes)
+    panel_path = config.data.path_or_none(config.data.panel_gene_file)
+    if panel_path is not None and panel_path.exists():
+        if panel_path.suffix.lower() in {".csv", ".tsv"}:
+            sep = "\t" if panel_path.suffix.lower() == ".tsv" else ","
+            frame = pd.read_csv(panel_path, sep=sep)
+            if not frame.empty:
+                genes.extend(frame.iloc[:, 0].dropna().astype(str).tolist())
+        else:
+            genes.extend(line.strip() for line in panel_path.read_text(encoding="utf-8").splitlines())
+    return _unique_nonempty(genes)
+
+
+def _panel_metrics(gene_names: list[str], panel_genes: list[str]) -> dict[str, Any]:
+    data_genes = set(_unique_nonempty(gene_names))
+    panel_set = set(panel_genes)
+    missing = sorted(panel_set.difference(data_genes))
+    outside = sorted(data_genes.difference(panel_set)) if panel_set else []
+    return {
+        "configured": bool(panel_set),
+        "panel_gene_count": int(len(panel_set)),
+        "data_gene_count": int(len(data_genes)),
+        "genes_in_panel_count": int(len(data_genes.intersection(panel_set))) if panel_set else 0,
+        "missing_from_data_count": int(len(missing)),
+        "outside_panel_count": int(len(outside)),
+        "missing_from_data_preview": missing[:20],
+        "outside_panel_preview": outside[:20],
+    }
+
+
+def _patch_provenance(patch_table: pd.DataFrame) -> dict[str, Any]:
+    columns = [str(col) for col in patch_table.columns]
+    lowered = {col: col.lower() for col in columns}
+    coordinate_markers = {
+        "x",
+        "y",
+        "patch_x",
+        "patch_y",
+        "center_x",
+        "center_y",
+        "x_centroid",
+        "y_centroid",
+        "pixel_x",
+        "pixel_y",
+    }
+    coordinate_cols = [col for col, lower in lowered.items() if lower in coordinate_markers or lower.endswith(("_x", "_y"))]
+    image_cols = [
+        col
+        for col, lower in lowered.items()
+        if lower in {"image_path", "source_image", "wsi_path", "slide_path", "he_image_path"} or "image" in lower
+    ]
+    transform_cols = [
+        col
+        for col, lower in lowered.items()
+        if "registration" in lower or "transform" in lower or "affine" in lower or "matrix" in lower
+    ]
+    parameter_cols = [
+        col
+        for col, lower in lowered.items()
+        if lower in {"patch_size", "level", "magnification", "mpp", "scale", "stride"} or lower.startswith("patch_")
+    ]
+    return {
+        "columns": columns,
+        "coordinate_columns": coordinate_cols,
+        "image_columns": image_cols,
+        "registration_columns": transform_cols,
+        "parameter_columns": parameter_cols,
+        "has_coordinates": bool(coordinate_cols),
+        "has_source_image": bool(image_cols),
+        "has_registration_metadata": bool(transform_cols),
+    }
+
+
+def _unique_nonempty(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        normalized = str(value).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
 def _structure_coverage(case: TrainingCase, config: StGPTConfig) -> float:
     if config.data.structure_key not in case.adata.obs.columns:
         return 0.0
@@ -322,6 +418,30 @@ def _missing_image_count(patch_table: pd.DataFrame) -> int:
         if not Path(str(value)).exists():
             count += 1
     return int(count)
+
+
+def _assign_blocks_to_splits(block_ids: np.ndarray, config: StGPTConfig) -> dict[str, str]:
+    rng = np.random.default_rng(_resolve_split_seed(config))
+    blocks = np.asarray(sorted(pd.unique(block_ids)), dtype=object)
+    rng.shuffle(blocks)
+    block_sizes = {block: int((block_ids == block).sum()) for block in blocks}
+    n_cells = int(len(block_ids))
+    assignment: dict[str, str] = {}
+    cumulative = 0.0
+    train_cut = n_cells * float(config.split.train_fraction)
+    val_cut = n_cells * float(config.split.train_fraction + config.split.val_fraction)
+    for block in blocks:
+        size = block_sizes[block]
+        midpoint = cumulative + size / 2.0
+        if midpoint < train_cut:
+            split = "train"
+        elif midpoint < val_cut:
+            split = "val"
+        else:
+            split = "test"
+        assignment[str(block)] = split
+        cumulative += size
+    return assignment
 
 
 def _normalize_structure_id(value: object) -> str:

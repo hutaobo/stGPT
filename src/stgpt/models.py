@@ -17,8 +17,9 @@ class ImageGeneSTGPTOutput:
 
 
 class PatchEncoder(nn.Module):
-    def __init__(self, image_channels: int, d_model: int) -> None:
+    def __init__(self, image_channels: int, d_model: int, *, scales: list[int] | tuple[int, ...] = (1,)) -> None:
         super().__init__()
+        self.scales = tuple(sorted({int(scale) for scale in scales if int(scale) >= 1})) or (1,)
         self.net = nn.Sequential(
             nn.Conv2d(image_channels, 32, kernel_size=5, stride=2, padding=2),
             nn.GELU(),
@@ -33,9 +34,21 @@ class PatchEncoder(nn.Module):
             nn.Linear(96, d_model),
             nn.LayerNorm(d_model),
         )
+        self.fusion = (
+            nn.Sequential(nn.Linear(d_model * len(self.scales), d_model), nn.GELU(), nn.LayerNorm(d_model))
+            if len(self.scales) > 1
+            else nn.Identity()
+        )
 
     def forward(self, image: Tensor) -> Tensor:
-        return self.net(image)
+        features = []
+        for scale in self.scales:
+            if scale == 1:
+                scaled = image
+            else:
+                scaled = F.avg_pool2d(image, kernel_size=scale, stride=scale, ceil_mode=True)
+            features.append(self.net(scaled))
+        return self.fusion(torch.cat(features, dim=1) if len(features) > 1 else features[0])
 
 
 class ImageGeneSTGPT(nn.Module):
@@ -50,6 +63,11 @@ class ImageGeneSTGPT(nn.Module):
         dim_feedforward: int | None = None,
         n_expression_bins: int = 51,
         image_channels: int = 3,
+        patch_scales: list[int] | tuple[int, ...] = (1,),
+        use_expression_values: bool = True,
+        use_image_context: bool = True,
+        use_spatial_context: bool = True,
+        use_structure_context: bool = True,
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
@@ -58,10 +76,14 @@ class ImageGeneSTGPT(nn.Module):
         self.n_genes = int(n_genes)
         self.n_structures = int(max(1, n_structures))
         self.d_model = int(d_model)
+        self.use_expression_values = bool(use_expression_values)
+        self.use_image_context = bool(use_image_context)
+        self.use_spatial_context = bool(use_spatial_context)
+        self.use_structure_context = bool(use_structure_context)
         self.gene_embedding = nn.Embedding(self.n_genes + 1, d_model, padding_idx=0)
         self.expression_value = nn.Sequential(nn.Linear(1, d_model), nn.GELU(), nn.LayerNorm(d_model))
         self.expression_bin = nn.Embedding(n_expression_bins, d_model)
-        self.patch_encoder = PatchEncoder(image_channels, d_model)
+        self.patch_encoder = PatchEncoder(image_channels, d_model, scales=patch_scales)
         self.spatial_encoder = nn.Sequential(nn.Linear(2, d_model), nn.GELU(), nn.LayerNorm(d_model))
         self.context_embedding = nn.Embedding(self.n_structures + 1, d_model, padding_idx=0)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
@@ -99,13 +121,23 @@ class ImageGeneSTGPT(nn.Module):
             context_ids = torch.zeros(batch_size, dtype=torch.long, device=gene_ids.device)
 
         gene_tok = self.gene_embedding(gene_ids)
-        value_tok = self.expression_value(expr_values.unsqueeze(-1))
-        bin_tok = self.expression_bin(expr_bins.clamp_min(0))
+        if self.use_expression_values:
+            value_tok = self.expression_value(expr_values.unsqueeze(-1))
+            bin_tok = self.expression_bin(expr_bins.clamp_min(0))
+        else:
+            value_tok = torch.zeros_like(gene_tok)
+            bin_tok = torch.zeros_like(gene_tok)
         gene_tokens = gene_tok + value_tok + bin_tok
 
         image_emb = self.patch_encoder(image)
+        if not self.use_image_context:
+            image_emb = torch.zeros_like(image_emb)
         spatial_emb = self.spatial_encoder(spatial.float())
+        if not self.use_spatial_context:
+            spatial_emb = torch.zeros_like(spatial_emb)
         context_emb = self.context_embedding(context_ids.clamp(min=0, max=self.n_structures))
+        if not self.use_structure_context:
+            context_emb = torch.zeros_like(context_emb)
         cls = self.cls_token.expand(batch_size, -1, -1)
         prefix = torch.stack([image_emb, spatial_emb, context_emb], dim=1)
         tokens = torch.cat([cls, prefix, gene_tokens], dim=1)

@@ -67,11 +67,12 @@ These methods may not all use H&E as a core modality, but they define the baseli
 - Build robust Xenium ingestion and validation first: coordinates, gene names, panel metadata, cell IDs, optional morphology assets, and reproducible AnnData export.
 - Treat `stgpt validate-data` as the first real-data gate: it should write a case manifest, QC reports, and deterministic splits before any paper-facing training run.
 - Treat `stgpt evaluate` as the second gate: it should consume the QC split file and write reconstruction, retrieval, and embedding-quality artifacts for every paper-facing checkpoint.
-- Make patch and structure manifests reproducible: every embedding should be traceable to image coordinates, patch extraction parameters, and any spatho-derived structure labels.
+- Make patch and structure manifests reproducible: every embedding should be traceable to image coordinates, patch extraction parameters, registration metadata, and any spatho-derived structure labels.
 - Implement baseline comparisons against the closest method families: scGPT-spatial-style gene/spatial objectives, STPath/STORM-style masked expression prediction, ST-Align/OmiCLIP-style contrastive alignment, and xMINT-style Xenium imputation.
-- Treat objective ablations as required evidence: gene-only, image-only, spatial-only, image+gene, image+gene+spatial, and full image+gene+spatial+structure variants.
+- Treat objective ablations as required evidence: `stgpt train --ablation gene_only`, `image_only`, `spatial_only`, `image_gene`, `image_gene_spatial`, and `full` should be run from the same data split before making claims.
 - Add explicit handling for batch effects and domain shift: case-level splits, slide-level splits, organ/tissue holdouts, platform holdouts where possible, and staining variation checks.
 - Define a panel and vocabulary strategy: fixed panel vocabularies for Xenium smoke tests, configurable gene vocabularies for real studies, and clear behavior for missing or out-of-panel genes.
+- Keep failure analysis next to metrics: every evaluation should report patch coverage, missing images, registration traceability, panel mismatch, and available batch/slide/domain keys.
 - Keep the public package practical: CPU smoke tests, small synthetic fixtures, documented real-data adapters, and compact exported embeddings for downstream pathology workflows.
 
 ## Risks and Evaluation
@@ -80,6 +81,7 @@ These methods may not all use H&E as a core modality, but they define the baseli
 - Platform heterogeneity matters. Visium spots, Visium HD bins, Xenium cells, CosMx cells, and MERFISH-style assays differ in resolution, panel design, sparsity, segmentation, and image registration assumptions.
 - Xenium is not whole-transcriptome by default. Gene reconstruction and imputation claims must distinguish panel reconstruction from whole-transcriptome prediction.
 - H&E registration quality is a major failure mode. The development workflow should record image alignment assumptions and expose quality-control hooks rather than treating image patches as automatically correct.
+- Ablation comparisons are only valid when they reuse the same QC-generated split file, seed, panel policy, and patch provenance contract.
 - Gated and non-commercial datasets/models may limit reproducibility. Public smoke tests and open synthetic fixtures should remain part of the core repo even when larger benchmarks use restricted assets.
 - Large foundation models may outperform `stGPT` on generic expression prediction. The project should win by being transparent, Xenium-aware, easy to run, and useful for downstream spatial pathology evidence generation.
 
@@ -92,6 +94,7 @@ The next development phase should be considered successful when `stGPT` can:
 - attach reproducible H&E patch and structure/context metadata
 - train the image-gene Transformer with reconstruction and contrastive objectives
 - evaluate the checkpoint with the QC split file instead of ad hoc random splits
+- write a failure-analysis artifact covering patch, registration, panel, and split/domain risks
 - export cell or region embeddings with enough metadata for downstream analysis
 - run smoke tests without private data
 - report baseline and ablation results that make the strategic claims above testable

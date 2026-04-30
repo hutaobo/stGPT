@@ -1,6 +1,6 @@
 # stGPT
 
-`stGPT` is a Xenium-first image-gene GPT prototype for spatial transcriptomics. It is designed as a clean, independent package inspired by [`bowang-lab/scGPT-spatial`](https://github.com/bowang-lab/scGPT-spatial), while adding trainable H&E image context and hooks for pyXenium and spatho evidence.
+`stGPT` is a Xenium-first morpho-molecular GPT prototype for spatial transcriptomics. It is designed as a clean, independent package inspired by [`bowang-lab/scGPT-spatial`](https://github.com/bowang-lab/scGPT-spatial), while adding trainable H&E image context and hooks for pyXenium and spatho evidence. The target claim is reusable Xenium-centered spatial pathology embeddings, not just another H&E-to-expression regressor.
 
 The first implementation target is deliberately practical:
 
@@ -49,7 +49,7 @@ After training, evaluate against the QC split file instead of creating a new spl
 stgpt evaluate --checkpoint outputs/atera_wta_breast/train/checkpoints/last.pt --config configs/atera_wta_breast.yaml --splits outputs/atera_wta_breast/qc/splits.csv --output outputs/atera_wta_breast/eval
 ```
 
-This writes `evaluation_metrics.json`, `prediction_summary.csv`, `retrieval_metrics.csv`, and `embedding_qc.csv`.
+This writes `evaluation_metrics.json`, `prediction_summary.csv`, `retrieval_metrics.csv`, `embedding_qc.csv`, and `failure_analysis.csv`.
 
 ## Smoke Training
 
@@ -59,6 +59,17 @@ stgpt train --config configs/smoke.yaml --preset smoke --max-steps 2
 ```
 
 The smoke config generates a tiny synthetic AnnData object and synthetic H&E-like image patches at runtime under `outputs/smoke/`.
+
+For paper-facing baselines, train explicit ablations from the same config:
+
+```bash
+stgpt train --config configs/smoke.yaml --preset smoke --ablation gene_only
+stgpt train --config configs/smoke.yaml --preset smoke --ablation image_only
+stgpt train --config configs/smoke.yaml --preset smoke --ablation spatial_only
+stgpt train --config configs/smoke.yaml --preset smoke --ablation image_gene
+stgpt train --config configs/smoke.yaml --preset smoke --ablation image_gene_spatial
+stgpt train --config configs/smoke.yaml --preset smoke --ablation full
+```
 
 ## Atera / PDC Training
 
@@ -88,16 +99,18 @@ The public repo intentionally stores only templates. Real data, generated `.h5ad
 `ImageGeneSTGPT` combines:
 
 - gene tokens and expression-value/bin embeddings
-- a trainable lightweight image patch encoder
+- a trainable lightweight, optionally multi-scale image patch encoder
 - spatial coordinate and optional context tokens
 - Transformer fusion over image, spatial, context, and gene tokens
 - masked gene reconstruction, neighborhood reconstruction, image-gene contrastive loss, and optional structure classification
+- modality switches for gene-only, image-only, spatial-only, image-gene, image-gene-spatial, and full ablations
 
 The API entry points are:
 
 ```python
 from stgpt.config import StGPTConfig
 from stgpt.data import build_training_manifest, load_xenium_case
+from stgpt.evaluation import evaluate
 from stgpt.inference import embed_anndata
 from stgpt.models import ImageGeneSTGPT
 from stgpt.training import train

@@ -6,6 +6,7 @@ data:
   output_dir: ${STGPT_OUTPUT_ROOT}/atera_wta_breast
   patch_manifest: ${STGPT_SPATHO_RUN_ROOT}/spatho/he_foundation/he_contour_patches_manifest.json
   structure_assignments_csv: ${STGPT_SPATHO_RUN_ROOT}/spatho/structure_assignments.csv
+  panel_gene_file: ${STGPT_XENIUM_PANEL_GENES}
   cluster_key: cluster
   structure_key: structure_id
   gene_name_key: feature_name
@@ -18,6 +19,7 @@ model:
   max_genes: 1200
   n_expression_bins: 51
   image_size: 224
+  patch_scales: [1, 2]
   dropout: 0.1
 training:
   batch_size: 32
@@ -28,3 +30,8 @@ training:
   output_dir: ${STGPT_OUTPUT_ROOT}/atera_wta_breast/train
   device: cuda
   num_workers: 4
+split:
+  strategy: spatial_block
+  train_fraction: 0.70
+  val_fraction: 0.15
+  test_fraction: 0.15

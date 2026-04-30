@@ -40,6 +40,11 @@ def embed_anndata(
         dim_feedforward=cfg.model.dim_feedforward,
         n_expression_bins=cfg.model.n_expression_bins,
         image_channels=cfg.model.image_channels,
+        patch_scales=cfg.model.patch_scales,
+        use_expression_values=cfg.model.use_expression_values,
+        use_image_context=cfg.model.use_image_context,
+        use_spatial_context=cfg.model.use_spatial_context,
+        use_structure_context=cfg.model.use_structure_context and cfg.data.include_structure_context,
         dropout=cfg.model.dropout,
     )
     model.load_state_dict(checkpoint_payload["model_state"], strict=False)
