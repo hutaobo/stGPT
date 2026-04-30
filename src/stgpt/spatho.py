@@ -190,10 +190,12 @@ def _compute_qc_flags(case, cfg: StGPTConfig) -> list[str]:
     """Compute per-cell QC flags based on patch manifest coverage."""
     patch_table = case.patch_table
     if "cell_id" in patch_table.columns and "image_path" in patch_table.columns:
-        covered: set[str] = set()
-        for _, row in patch_table.iterrows():
-            if pd.notna(row.get("cell_id")) and pd.notna(row.get("image_path")) and Path(str(row["image_path"])).exists():
-                covered.add(str(row["cell_id"]))
+        valid_rows = patch_table[patch_table["cell_id"].notna() & patch_table["image_path"].notna()].copy()
+        covered: set[str] = {
+            str(row.cell_id)
+            for row in valid_rows.itertuples(index=False)
+            if Path(str(row.image_path)).exists()
+        }
     else:
         covered = set()
 
