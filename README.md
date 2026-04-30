@@ -43,6 +43,14 @@ stgpt validate-data --config configs/atera_wta_breast.yaml --output outputs/ater
 
 This writes `case_manifest.json`, `qc_report.json`, `qc_report.md`, and `splits.csv`. Training should only proceed after fatal QC errors are resolved.
 
+After training, evaluate against the QC split file instead of creating a new split:
+
+```bash
+stgpt evaluate --checkpoint outputs/atera_wta_breast/train/checkpoints/last.pt --config configs/atera_wta_breast.yaml --splits outputs/atera_wta_breast/qc/splits.csv --output outputs/atera_wta_breast/eval
+```
+
+This writes `evaluation_metrics.json`, `prediction_summary.csv`, `retrieval_metrics.csv`, and `embedding_qc.csv`.
+
 ## Smoke Training
 
 ```bash
@@ -64,6 +72,7 @@ set STGPT_OUTPUT_ROOT=D:\path\to\stgpt_outputs
 stgpt prepare-xenium --config configs\atera_wta_breast.yaml
 stgpt validate-data --config configs\atera_wta_breast.yaml --output %STGPT_OUTPUT_ROOT%\atera_wta_breast\qc
 stgpt train --config configs\atera_wta_breast.yaml --preset pdc
+stgpt evaluate --checkpoint %STGPT_OUTPUT_ROOT%\atera_wta_breast\train\checkpoints\last.pt --config configs\atera_wta_breast.yaml --splits %STGPT_OUTPUT_ROOT%\atera_wta_breast\qc\splits.csv --output %STGPT_OUTPUT_ROOT%\atera_wta_breast\eval
 ```
 
 On PDC, use:

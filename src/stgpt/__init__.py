@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .config import DataConfig, ModelConfig, SplitConfig, StGPTConfig, TrainingConfig
 from .data import build_training_manifest, load_xenium_case
+from .evaluation import evaluate
 from .inference import embed_anndata
 from .models import ImageGeneSTGPT
 from .qc import validate_data, validate_training_case
@@ -19,6 +20,7 @@ __all__ = [
     "TrainingConfig",
     "build_training_manifest",
     "embed_anndata",
+    "evaluate",
     "load_xenium_case",
     "train",
     "validate_data",

@@ -12,6 +12,7 @@ import typer
 from . import __version__
 from .config import StGPTConfig
 from .data import build_training_manifest
+from .evaluation import evaluate as evaluate_model
 from .inference import embed_anndata, export_spatho_summaries, write_embeddings_table
 from .qc import validate_data
 from .training import train as train_model
@@ -60,6 +61,26 @@ def train(
     if result.get("metrics"):
         printable["last_metrics"] = result["metrics"][-1]
     typer.echo(json.dumps(printable, indent=2))
+
+
+@app.command()
+def evaluate(
+    checkpoint: Annotated[Path, typer.Option("--checkpoint", "-k", exists=True)],
+    config: Annotated[Path, typer.Option("--config", "-c", exists=True)],
+    splits: Annotated[Path, typer.Option("--splits", "-s", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    batch_size: Annotated[int, typer.Option("--batch-size")] = 32,
+    device: Annotated[str, typer.Option("--device")] = "auto",
+) -> None:
+    result = evaluate_model(
+        checkpoint=checkpoint,
+        config=config,
+        splits=splits,
+        output_dir=output,
+        batch_size=batch_size,
+        device=device,
+    )
+    typer.echo(json.dumps(result, indent=2))
 
 
 @app.command()
