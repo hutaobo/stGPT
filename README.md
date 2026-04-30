@@ -51,6 +51,15 @@ stgpt evaluate --checkpoint outputs/atera_wta_breast/train/checkpoints/last.pt -
 
 This writes `evaluation_metrics.json`, `prediction_summary.csv`, `retrieval_metrics.csv`, `embedding_qc.csv`, and `failure_analysis.csv`.
 
+To package a trained checkpoint as a reusable stGPT model backend and emit spatho-compatible artifacts:
+
+```bash
+stgpt package-model --checkpoint outputs/atera_wta_breast/train/checkpoints/last.pt --eval outputs/atera_wta_breast/eval/evaluation_metrics.json --output outputs/atera_wta_breast/model
+stgpt spatho-embed --model outputs/atera_wta_breast/model --config configs/atera_wta_breast.yaml --output outputs/atera_wta_breast/spatho
+```
+
+The spatho export writes `cell_embeddings.parquet`, `structure_embedding_summary.csv`, `patch_embedding_summary.csv`, `stgpt_spatho_manifest.json`, and `qc_report.json`.
+
 ## Smoke Training
 
 ```bash
@@ -84,6 +93,8 @@ stgpt prepare-xenium --config configs\atera_wta_breast.yaml
 stgpt validate-data --config configs\atera_wta_breast.yaml --output %STGPT_OUTPUT_ROOT%\atera_wta_breast\qc
 stgpt train --config configs\atera_wta_breast.yaml --preset pdc
 stgpt evaluate --checkpoint %STGPT_OUTPUT_ROOT%\atera_wta_breast\train\checkpoints\last.pt --config configs\atera_wta_breast.yaml --splits %STGPT_OUTPUT_ROOT%\atera_wta_breast\qc\splits.csv --output %STGPT_OUTPUT_ROOT%\atera_wta_breast\eval
+stgpt package-model --checkpoint %STGPT_OUTPUT_ROOT%\atera_wta_breast\train\checkpoints\last.pt --eval %STGPT_OUTPUT_ROOT%\atera_wta_breast\eval\evaluation_metrics.json --output %STGPT_OUTPUT_ROOT%\atera_wta_breast\model
+stgpt spatho-embed --model %STGPT_OUTPUT_ROOT%\atera_wta_breast\model --config configs\atera_wta_breast.yaml --output %STGPT_OUTPUT_ROOT%\atera_wta_breast\spatho
 ```
 
 On PDC, use:
@@ -113,6 +124,7 @@ from stgpt.data import build_training_manifest, load_xenium_case
 from stgpt.evaluation import evaluate
 from stgpt.inference import embed_anndata
 from stgpt.models import ImageGeneSTGPT
+from stgpt.spatho import SpathoStGPTModel, embed_spatho_case, package_model
 from stgpt.training import train
 ```
 

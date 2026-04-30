@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
@@ -100,6 +101,13 @@ def train(
             "n_structures": dataset.n_structures,
             "structure_names": dataset.structure_names,
             "metrics": metrics,
+            "model_version": _stgpt_version(),
+            "panel_metadata": _panel_metadata(cfg),
+            "training_summary": {
+                "steps": step,
+                "last_metrics": metrics[-1] if metrics else {},
+                "ablation_mode": cfg.training.ablation_mode,
+            },
         },
         checkpoint_path,
     )
@@ -131,3 +139,23 @@ def _resolve_device(name: str) -> torch.device:
 
 def _move_batch(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
     return {key: value.to(device) for key, value in batch.items()}
+
+
+def _panel_metadata(config: StGPTConfig) -> dict[str, Any]:
+    panel_genes = config.data.panel_genes or []
+    if config.data.panel_gene_file:
+        path = config.data.path_or_none(config.data.panel_gene_file)
+        if path is not None and path.exists():
+            panel_genes = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return {
+        "panel_gene_count": len(panel_genes),
+        "panel_gene_file": config.data.panel_gene_file,
+        "gene_name_key": config.data.gene_name_key,
+    }
+
+
+def _stgpt_version() -> str:
+    try:
+        return version("stgpt")
+    except PackageNotFoundError:
+        return "0.1.0"
