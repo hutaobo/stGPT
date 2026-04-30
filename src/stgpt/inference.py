@@ -1,0 +1,108 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import anndata as ad
+import numpy as np
+import pandas as pd
+import torch
+from torch.utils.data import DataLoader
+
+from .config import StGPTConfig
+from .data import ImageGeneDataset, TrainingCase
+from .models import ImageGeneSTGPT
+
+
+def embed_anndata(
+    adata: ad.AnnData,
+    *,
+    checkpoint: str | Path,
+    batch_size: int = 32,
+    device: str = "auto",
+) -> ad.AnnData:
+    checkpoint_payload = torch.load(checkpoint, map_location="cpu")
+    cfg = StGPTConfig.model_validate(checkpoint_payload["config"])
+    if "spatial" not in adata.obsm and cfg.data.spatial_key not in adata.obsm:
+        raise ValueError("AnnData must contain spatial coordinates for stGPT embedding.")
+    case = TrainingCase(adata=adata.copy(), patch_table=pd.DataFrame(), output_dir=Path("."))
+    payload = cfg.model_dump()
+    payload["training"]["batch_size"] = int(batch_size)
+    cfg = StGPTConfig.model_validate(payload)
+    dataset = ImageGeneDataset(case, cfg, for_inference=True)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=dataset.collate, num_workers=0)
+    target = _resolve_device(device)
+    model = ImageGeneSTGPT(
+        n_genes=dataset.vocab.size - 1,
+        n_structures=int(checkpoint_payload.get("n_structures", dataset.n_structures)),
+        d_model=cfg.model.d_model,
+        n_heads=cfg.model.n_heads,
+        n_layers=cfg.model.n_layers,
+        dim_feedforward=cfg.model.dim_feedforward,
+        n_expression_bins=cfg.model.n_expression_bins,
+        image_channels=cfg.model.image_channels,
+        dropout=cfg.model.dropout,
+    )
+    model.load_state_dict(checkpoint_payload["model_state"], strict=False)
+    model.to(target)
+    model.eval()
+    embeddings = []
+    with torch.no_grad():
+        for batch in loader:
+            batch = {key: value.to(target) for key, value in batch.items()}
+            output = model(
+                gene_ids=batch["gene_ids"],
+                expr_values=batch["expr_values"],
+                expr_bins=batch["expr_bins"],
+                image=batch["image"],
+                spatial=batch["spatial"],
+                context_ids=batch["context_ids"],
+                gene_padding_mask=batch["gene_padding_mask"],
+            )
+            embeddings.append(output.cell_emb.cpu().numpy())
+    out = adata.copy()
+    out.obsm["X_stGPT"] = np.vstack(embeddings).astype(np.float32)
+    return out
+
+
+def write_embeddings_table(adata: ad.AnnData, output: str | Path) -> Path:
+    if "X_stGPT" not in adata.obsm:
+        raise ValueError("AnnData is missing obsm['X_stGPT'].")
+    frame = pd.DataFrame(adata.obsm["X_stGPT"], index=adata.obs_names)
+    frame.insert(0, "cell_id", adata.obs["cell_id"].astype(str).to_numpy() if "cell_id" in adata.obs else adata.obs_names.astype(str))
+    for column in ("cluster", "structure_id"):
+        if column in adata.obs.columns:
+            frame[column] = adata.obs[column].astype(str).to_numpy()
+    path = Path(output)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_parquet(path, index=False)
+    return path
+
+
+def export_spatho_summaries(embeddings: str | Path, output: str | Path) -> dict[str, str]:
+    frame = pd.read_parquet(embeddings)
+    out_dir = Path(output)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    outputs: dict[str, str] = {}
+    for key in ("cluster", "structure_id"):
+        if key not in frame.columns:
+            continue
+        numeric_cols = [col for col in frame.columns if str(col).isdigit() or str(col).startswith("emb_")]
+        if not numeric_cols:
+            numeric_cols = [col for col in frame.columns if col not in {"cell_id", "cluster", "structure_id"}]
+        summary = frame.groupby(key)[numeric_cols].mean().reset_index()
+        path = out_dir / f"{key}_embedding_summary.csv"
+        summary.to_csv(path, index=False)
+        outputs[f"{key}_summary"] = str(path)
+    copied = out_dir / "cell_embeddings.parquet"
+    frame.to_parquet(copied, index=False)
+    outputs["cell_embeddings"] = str(copied)
+    return outputs
+
+
+def _resolve_device(name: str) -> torch.device:
+    normalized = str(name).lower()
+    if normalized == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if normalized == "cuda" and not torch.cuda.is_available():
+        return torch.device("cpu")
+    return torch.device(normalized)

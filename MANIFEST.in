@@ -1,0 +1,5 @@
+include CITATION.cff
+include NOTICE
+recursive-include configs *.yaml *.example
+recursive-include scripts *.slurm
+recursive-include tests *.py

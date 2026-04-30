@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: "If you use stGPT, please cite this repository and the upstream spatial transcriptomics foundation-model work that inspired it."
+title: "stGPT: Image-Gene GPT for Spatial Transcriptomics"
+authors:
+  - family-names: "Hu"
+    given-names: "Taobo"
+license: "PolyForm-Noncommercial-1.0.0"
+repository-code: "https://github.com/hutaobo/stGPT"
+keywords:
+  - spatial transcriptomics
+  - Xenium
+  - histopathology
+  - multimodal learning
+  - foundation models
+references:
+  - type: article
+    title: "scGPT-spatial: Continual Pretraining of Single-Cell Foundation Model for Spatial Transcriptomics"
+    authors:
+      - family-names: "Wang"
+        given-names: "Chloe Xueqi"
+      - family-names: "Cui"
+        given-names: "Haotian"
+      - family-names: "Zhang"
+        given-names: "Andrew Hanzhuo"
+      - family-names: "Xie"
+        given-names: "Ronald"
+      - family-names: "Goodarzi"
+        given-names: "Hani"
+      - family-names: "Wang"
+        given-names: "Bo"
+    year: 2025
+    url: "https://www.biorxiv.org/content/10.1101/2025.02.05.636714v1"

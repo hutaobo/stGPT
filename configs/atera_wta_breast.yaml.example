@@ -1,0 +1,30 @@
+case_name: atera_wta_breast
+data:
+  mode: xenium
+  dataset_root: ${STGPT_XENIUM_ROOT}
+  spatho_run_root: ${STGPT_SPATHO_RUN_ROOT}
+  output_dir: ${STGPT_OUTPUT_ROOT}/atera_wta_breast
+  patch_manifest: ${STGPT_SPATHO_RUN_ROOT}/spatho/he_foundation/he_contour_patches_manifest.json
+  structure_assignments_csv: ${STGPT_SPATHO_RUN_ROOT}/spatho/structure_assignments.csv
+  cluster_key: cluster
+  structure_key: structure_id
+  gene_name_key: feature_name
+  spatial_key: spatial
+  image_size: 224
+model:
+  d_model: 256
+  n_heads: 8
+  n_layers: 4
+  max_genes: 1200
+  n_expression_bins: 51
+  image_size: 224
+  dropout: 0.1
+training:
+  batch_size: 32
+  learning_rate: 0.0001
+  max_steps: 10000
+  mask_probability: 0.15
+  neighborhood_k: 8
+  output_dir: ${STGPT_OUTPUT_ROOT}/atera_wta_breast/train
+  device: cuda
+  num_workers: 4

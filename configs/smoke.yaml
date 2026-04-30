@@ -1,0 +1,26 @@
+case_name: smoke
+data:
+  mode: synthetic
+  output_dir: outputs/smoke
+  n_cells: 24
+  n_genes: 48
+  n_structures: 3
+  image_size: 32
+  seed: 13
+model:
+  d_model: 32
+  n_heads: 4
+  n_layers: 1
+  max_genes: 32
+  n_expression_bins: 16
+  image_size: 32
+  dropout: 0.1
+training:
+  batch_size: 6
+  learning_rate: 0.001
+  max_steps: 2
+  mask_probability: 0.2
+  neighborhood_k: 4
+  output_dir: outputs/smoke/train
+  device: cpu
+  num_workers: 0

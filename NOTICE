@@ -1,0 +1,15 @@
+stGPT is an independent research prototype by Taobo Hu.
+
+This repository is inspired by scGPT-spatial:
+
+  scGPT-spatial: Continual Pretraining of Single-Cell Foundation Model for
+  Spatial Transcriptomics
+  https://github.com/bowang-lab/scGPT-spatial
+
+The scGPT-spatial repository is licensed under the MIT License by WangLab at
+the University of Toronto. stGPT does not vendor or copy scGPT-spatial source
+code. It uses scGPT/scGPT-spatial as conceptual background and keeps its own
+implementation surface for Xenium-first image-gene spatial transcriptomics.
+
+stGPT also integrates with optional external packages developed by Taobo Hu,
+including pyXenium and spatho, when they are installed separately.
