@@ -1,6 +1,6 @@
 # stGPT
 
-`stGPT` is a Xenium-first morpho-molecular GPT prototype for spatial transcriptomics. It is designed as a clean, independent package inspired by [`bowang-lab/scGPT-spatial`](https://github.com/bowang-lab/scGPT-spatial), while adding trainable H&E image context and hooks for pyXenium and spatho evidence. The target claim is reusable Xenium-centered spatial pathology embeddings, not just another H&E-to-expression regressor.
+`stGPT` is a Xenium-first morpho-molecular foundation-model backend in development for spatial transcriptomics. It is designed as a clean, independent package inspired by [`bowang-lab/scGPT-spatial`](https://github.com/bowang-lab/scGPT-spatial), while adding trainable H&E image context and hooks for pyXenium and spatho evidence. The target claim is reusable Xenium-centered spatial pathology embeddings, not just another H&E-to-expression regressor.
 
 The first implementation target is deliberately practical:
 
@@ -11,6 +11,20 @@ The first implementation target is deliberately practical:
 - export compact embeddings for downstream spatial pathology workflows
 
 No scGPT-spatial source code or model weights are vendored in this repository.
+
+## Architecture Narrative
+
+The platform story is:
+
+> stGPT learns the morpho-molecular tissue representation; spatho turns it into auditable spatial pathology evidence.
+
+The package is organized around three public layers while preserving the older imports:
+
+- `stgpt.foundation`: model, training, embedding, checkpoint loading, and model packaging
+- `stgpt.evidence`: QC, deterministic splits, evaluation, ablations, and failure analysis
+- `stgpt.runtime`: callable tool API for downstream systems such as spatho
+
+The runtime tool surface is intentionally conservative today: `embed_cells`, `evaluate_checkpoint`, `package_model`, and `export_spatho_artifacts` are implemented. Region retrieval, panel imputation, niche scoring, region comparison, and structure explanation remain planned capabilities until backed by tested outputs.
 
 ## Install
 
@@ -42,6 +56,7 @@ The stable entry point is `stgpt export-spatho`, which runs the full embed pipel
 |---|---|
 | `cell_embeddings.parquet` | One row per cell: `cell_id`, `x`, `y`, `structure_label`, `qc_flag`, `emb_0` … `emb_{d-1}` |
 | `structure_summary.parquet` | One row per structure: `structure_label`, `n_cells`, mean `emb_*` |
+| `structure_embedding_summary.csv` | CSV mirror of the structure summary for lightweight workbench consumption |
 | `qc_report.json` | Operational QC: cell counts, image coverage, per-structure breakdown |
 
 ```bash
@@ -112,7 +127,7 @@ stgpt package-model --checkpoint outputs/atera_wta_breast/train/checkpoints/last
 stgpt spatho-embed --model outputs/atera_wta_breast/model --config configs/atera_wta_breast.yaml --output outputs/atera_wta_breast/spatho
 ```
 
-The spatho export writes `cell_embeddings.parquet`, `structure_embedding_summary.csv`, `patch_embedding_summary.csv`, `stgpt_spatho_manifest.json`, and `qc_report.json`.
+The spatho export writes `cell_embeddings.parquet`, `structure_summary.parquet`, `structure_embedding_summary.csv`, and `qc_report.json`.
 
 ## Smoke Training
 
@@ -175,12 +190,13 @@ The API entry points are:
 ```python
 from stgpt.config import StGPTConfig
 from stgpt.data import build_training_manifest, load_xenium_case
-from stgpt.evaluation import evaluate
-from stgpt.inference import embed_anndata
-from stgpt.models import ImageGeneSTGPT
+from stgpt.foundation import ImageGeneSTGPT, embed_anndata, package_model, train
+from stgpt.evidence import evaluate, validate_data
+from stgpt.runtime import embed_cells, evaluate_checkpoint, export_spatho_artifacts
 from stgpt.spatho import PatchManifestRow, SpathoExportResult, run_spatho_export
-from stgpt.training import train
 ```
+
+Legacy imports such as `stgpt.models.ImageGeneSTGPT`, `stgpt.training.train`, `stgpt.qc.validate_data`, and `stgpt.evaluation.evaluate` remain supported.
 
 Development strategy: [`docs/strategy.md`](docs/strategy.md)
 

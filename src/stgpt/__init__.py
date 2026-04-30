@@ -3,9 +3,11 @@ from __future__ import annotations
 from .config import AblationMode, DataConfig, ModelConfig, SplitConfig, StGPTConfig, TrainingConfig
 from .data import build_training_manifest, load_xenium_case
 from .evaluation import evaluate
+from .foundation import package_model
 from .inference import embed_anndata
 from .models import ImageGeneSTGPT
 from .qc import validate_data, validate_training_case
+from .runtime import embed_cells, evaluate_checkpoint, export_spatho_artifacts
 from .spatho import (
     CELL_EMBEDDING_REQUIRED_COLUMNS,
     STRUCTURE_SUMMARY_REQUIRED_COLUMNS,
@@ -32,11 +34,14 @@ __all__ = [
     "TrainingConfig",
     "build_training_manifest",
     "embed_anndata",
+    "embed_cells",
     "evaluate",
+    "evaluate_checkpoint",
+    "export_spatho_artifacts",
     "load_xenium_case",
+    "package_model",
     "run_spatho_export",
     "train",
     "validate_data",
     "validate_training_case",
 ]
-

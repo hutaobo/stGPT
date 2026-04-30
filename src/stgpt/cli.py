@@ -13,6 +13,7 @@ from . import __version__
 from .config import StGPTConfig
 from .data import build_training_manifest
 from .evaluation import evaluate as evaluate_model
+from .foundation import package_model as package_model_backend
 from .inference import embed_anndata, write_embeddings_table
 from .qc import validate_data
 from .spatho import run_spatho_export
@@ -85,6 +86,17 @@ def evaluate(
     typer.echo(json.dumps(result, indent=2))
 
 
+@app.command("package-model")
+def package_model_command(
+    checkpoint: Annotated[Path, typer.Option("--checkpoint", "-k", exists=True)],
+    evaluation: Annotated[Path, typer.Option("--eval", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    model_name: Annotated[str | None, typer.Option("--model-name")] = None,
+) -> None:
+    result = package_model_backend(checkpoint=checkpoint, evaluation=evaluation, output_dir=output, model_name=model_name)
+    typer.echo(json.dumps(result, indent=2))
+
+
 @app.command()
 def embed(
     checkpoint: Annotated[Path, typer.Option("--checkpoint", "-k", exists=True)],
@@ -97,6 +109,19 @@ def embed(
     embedded = embed_anndata(adata, checkpoint=checkpoint, batch_size=batch_size, device=device)
     path = write_embeddings_table(embedded, output)
     typer.echo(json.dumps({"embeddings": str(path)}, indent=2))
+
+
+@app.command("spatho-embed")
+def spatho_embed_command(
+    model: Annotated[Path, typer.Option("--model", "-m", exists=True)],
+    config: Annotated[Path, typer.Option("--config", "-c", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    batch_size: Annotated[int, typer.Option("--batch-size")] = 32,
+    device: Annotated[str, typer.Option("--device")] = "auto",
+) -> None:
+    cfg = StGPTConfig.from_file(config)
+    result = run_spatho_export(cfg, checkpoint=model, output_dir=output, batch_size=batch_size, device=device)
+    typer.echo(json.dumps(result.to_dict(), indent=2))
 
 
 @app.command("export-spatho")

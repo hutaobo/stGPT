@@ -27,6 +27,7 @@ import pandas as pd
 
 from .config import StGPTConfig
 from .data import build_training_case
+from .foundation.packaging import resolve_model_checkpoint
 from .inference import embed_anndata
 
 #: Required non-embedding columns guaranteed to be present in ``cell_embeddings.parquet``.
@@ -88,6 +89,7 @@ class SpathoExportResult:
     n_cells: int
     n_cells_with_image: int
     embedding_dim: int
+    structure_embedding_summary: Path | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serialisable representation."""
@@ -95,6 +97,8 @@ class SpathoExportResult:
         payload["cell_embeddings"] = str(self.cell_embeddings)
         payload["structure_summary"] = str(self.structure_summary)
         payload["qc_report"] = str(self.qc_report)
+        if self.structure_embedding_summary is not None:
+            payload["structure_embedding_summary"] = str(self.structure_embedding_summary)
         return payload
 
 
@@ -149,7 +153,7 @@ def run_spatho_export(
         print(result.cell_embeddings)   # .../cell_embeddings.parquet
     """
     cfg = StGPTConfig.from_file(config) if isinstance(config, (str, Path)) else config
-    checkpoint_path = Path(checkpoint)
+    checkpoint_path = resolve_model_checkpoint(checkpoint)
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -161,12 +165,14 @@ def run_spatho_export(
 
     cell_emb_path = out_dir / "cell_embeddings.parquet"
     struct_sum_path = out_dir / "structure_summary.parquet"
+    struct_sum_csv_path = out_dir / "structure_embedding_summary.csv"
     qc_report_path = out_dir / "qc_report.json"
 
     frame.to_parquet(cell_emb_path, index=False)
 
     summary = _build_structure_summary(frame)
     summary.to_parquet(struct_sum_path, index=False)
+    summary.to_csv(struct_sum_csv_path, index=False)
 
     n_cells = int(len(frame))
     n_cells_with_image = int((frame["qc_flag"] == "ok").sum())
@@ -183,6 +189,7 @@ def run_spatho_export(
         n_cells=n_cells,
         n_cells_with_image=n_cells_with_image,
         embedding_dim=embedding_dim,
+        structure_embedding_summary=struct_sum_csv_path,
     )
 
 
