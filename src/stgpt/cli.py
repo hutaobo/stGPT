@@ -56,8 +56,9 @@ def train(
     config: Annotated[Path, typer.Option("--config", "-c", exists=True)],
     preset: Annotated[str | None, typer.Option("--preset")] = None,
     max_steps: Annotated[int | None, typer.Option("--max-steps")] = None,
+    ablation: Annotated[str | None, typer.Option("--ablation")] = None,
 ) -> None:
-    result = train_model(config, preset=preset, max_steps=max_steps)
+    result = train_model(config, preset=preset, max_steps=max_steps, ablation=ablation)
     printable = {key: value for key, value in result.items() if key != "metrics"}
     if result.get("metrics"):
         printable["last_metrics"] = result["metrics"][-1]

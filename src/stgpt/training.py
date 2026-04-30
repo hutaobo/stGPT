@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import random
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
@@ -9,14 +10,21 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from .config import StGPTConfig
+from .config import AblationMode, StGPTConfig
 from .data import ImageGeneDataset, build_training_case
 from .losses import compute_losses
 from .models import ImageGeneSTGPT
 
 
-def train(config: StGPTConfig | str | Path, *, preset: str | None = None, max_steps: int | None = None) -> dict[str, Any]:
+def train(
+    config: StGPTConfig | str | Path,
+    *,
+    preset: str | None = None,
+    max_steps: int | None = None,
+    ablation: AblationMode | str | None = None,
+) -> dict[str, Any]:
     cfg = StGPTConfig.from_file(config, preset=preset) if isinstance(config, (str, Path)) else config.apply_preset(preset)
+    cfg = cfg.apply_ablation(ablation or cfg.training.ablation_mode)
     if max_steps is not None:
         payload = cfg.model_dump()
         payload["training"]["max_steps"] = int(max_steps)
@@ -42,6 +50,11 @@ def train(config: StGPTConfig | str | Path, *, preset: str | None = None, max_st
         dim_feedforward=cfg.model.dim_feedforward,
         n_expression_bins=cfg.model.n_expression_bins,
         image_channels=cfg.model.image_channels,
+        patch_scales=cfg.model.patch_scales,
+        use_expression_values=cfg.model.use_expression_values,
+        use_image_context=cfg.model.use_image_context,
+        use_spatial_context=cfg.model.use_spatial_context,
+        use_structure_context=cfg.model.use_structure_context and cfg.data.include_structure_context,
         dropout=cfg.model.dropout,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.training.learning_rate, weight_decay=cfg.training.weight_decay)
@@ -88,6 +101,13 @@ def train(config: StGPTConfig | str | Path, *, preset: str | None = None, max_st
             "n_structures": dataset.n_structures,
             "structure_names": dataset.structure_names,
             "metrics": metrics,
+            "model_version": _stgpt_version(),
+            "panel_metadata": _panel_metadata(cfg),
+            "training_summary": {
+                "steps": step,
+                "last_metrics": metrics[-1] if metrics else {},
+                "ablation_mode": cfg.training.ablation_mode,
+            },
         },
         checkpoint_path,
     )
@@ -119,3 +139,23 @@ def _resolve_device(name: str) -> torch.device:
 
 def _move_batch(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
     return {key: value.to(device) for key, value in batch.items()}
+
+
+def _panel_metadata(config: StGPTConfig) -> dict[str, Any]:
+    panel_genes = config.data.panel_genes or []
+    if config.data.panel_gene_file:
+        path = config.data.path_or_none(config.data.panel_gene_file)
+        if path is not None and path.exists():
+            panel_genes = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return {
+        "panel_gene_count": len(panel_genes),
+        "panel_gene_file": config.data.panel_gene_file,
+        "gene_name_key": config.data.gene_name_key,
+    }
+
+
+def _stgpt_version() -> str:
+    try:
+        return version("stgpt")
+    except PackageNotFoundError:
+        return "0.1.0"

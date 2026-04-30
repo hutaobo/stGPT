@@ -6,6 +6,8 @@ import numpy as np
 import torch
 from PIL import Image
 
+_RESAMPLE_BILINEAR = Image.Resampling.BILINEAR
+
 
 def load_image_tensor(path: str | Path | None, *, image_size: int, channels: int = 3) -> torch.Tensor:
     if path is None:
@@ -13,7 +15,7 @@ def load_image_tensor(path: str | Path | None, *, image_size: int, channels: int
     image_path = Path(path)
     if not image_path.exists():
         return torch.zeros(channels, image_size, image_size, dtype=torch.float32)
-    image = Image.open(image_path).convert("RGB").resize((image_size, image_size), Image.BILINEAR)
+    image = Image.open(image_path).convert("RGB").resize((image_size, image_size), _RESAMPLE_BILINEAR)
     array = np.asarray(image, dtype=np.float32) / 255.0
     tensor = torch.from_numpy(array).permute(2, 0, 1).contiguous()
     if channels == 1:

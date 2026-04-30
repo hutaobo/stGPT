@@ -130,6 +130,11 @@ def make_synthetic_case(config: DataConfig) -> TrainingCase:
             {
                 "cell_id": cell_id,
                 "image_path": str(image_path),
+                "patch_x": float(coords[idx, 0]),
+                "patch_y": float(coords[idx, 1]),
+                "patch_size": int(config.image_size),
+                "source_image": "synthetic_he",
+                "registration_transform": "identity",
                 "structure_id": int(structure[idx]),
                 "cluster_id": str(obs.iloc[idx][config.cluster_key]),
             }
@@ -151,7 +156,8 @@ def load_patch_table(config: DataConfig) -> pd.DataFrame:
     for row in rows:
         if not isinstance(row, dict):
             continue
-        patch_meta = row.get("patch") if isinstance(row.get("patch"), dict) else {}
+        patch_payload = row.get("patch")
+        patch_meta: dict[str, Any] = patch_payload if isinstance(patch_payload, dict) else {}
         normalized.append(
             {
                 "cell_id": row.get("cell_id"),
@@ -159,6 +165,11 @@ def load_patch_table(config: DataConfig) -> pd.DataFrame:
                 "structure_id": row.get("structure_id"),
                 "structure_name": row.get("structure_name"),
                 "image_path": row.get("image_path") or patch_meta.get("image_path"),
+                "patch_x": row.get("patch_x") or row.get("x") or patch_meta.get("patch_x") or patch_meta.get("x"),
+                "patch_y": row.get("patch_y") or row.get("y") or patch_meta.get("patch_y") or patch_meta.get("y"),
+                "patch_size": row.get("patch_size") or patch_meta.get("patch_size"),
+                "source_image": row.get("source_image") or patch_meta.get("source_image"),
+                "registration_transform": row.get("registration_transform") or row.get("transform") or patch_meta.get("registration_transform"),
             }
         )
     return pd.DataFrame(normalized)

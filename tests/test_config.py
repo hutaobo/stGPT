@@ -37,3 +37,20 @@ training:
     assert cfg.training.max_steps == 2
     assert cfg.split.strategy == "spatial_block"
     assert cfg.split.train_fraction == 0.70
+
+
+def test_apply_ablation_sets_modalities_and_losses() -> None:
+    cfg = StGPTConfig().apply_ablation("image_gene_spatial")
+    assert cfg.training.ablation_mode == "image_gene_spatial"
+    assert cfg.model.use_expression_values
+    assert cfg.model.use_image_context
+    assert cfg.model.use_spatial_context
+    assert not cfg.model.use_structure_context
+    assert cfg.training.structure_loss_weight == 0.0
+
+    gene_only = StGPTConfig().apply_ablation("gene_only")
+    assert gene_only.model.use_expression_values
+    assert not gene_only.model.use_image_context
+    assert not gene_only.model.use_spatial_context
+    assert gene_only.training.image_gene_loss_weight == 0.0
+    assert gene_only.training.neighborhood_loss_weight == 0.0

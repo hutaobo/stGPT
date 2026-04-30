@@ -123,6 +123,34 @@ def test_spatial_block_splits_are_deterministic(tmp_path: Path) -> None:
     pd.testing.assert_frame_equal(first, second)
 
 
+def test_group_holdout_splits_keep_groups_together(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    case = make_synthetic_case(cfg.data)
+    case.adata.obs["slide_id"] = [f"slide_{idx % 4}" for idx in range(case.adata.n_obs)]
+    payload = cfg.model_dump()
+    payload["split"]["strategy"] = "group_holdout"
+    payload["split"]["group_key"] = "slide_id"
+    cfg = StGPTConfig.model_validate(payload)
+    splits = make_splits(case, cfg)
+    joined = splits.join(case.adata.obs[["slide_id"]].reset_index(drop=True))
+    assert joined.groupby("slide_id")["split"].nunique().max() == 1
+    assert set(splits["split"]).issubset({"train", "val", "test"})
+
+
+def test_panel_and_patch_provenance_are_reported(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    payload = cfg.model_dump()
+    payload["data"]["panel_genes"] = ["GENE000", "GENE001", "MISSING_PANEL_GENE"]
+    cfg = StGPTConfig.model_validate(payload)
+    result = validate_data(cfg, output_dir=tmp_path / "qc_panel")
+    manifest = json.loads(Path(result["case_manifest"]).read_text(encoding="utf-8"))
+    report = json.loads(Path(result["qc_report_json"]).read_text(encoding="utf-8"))
+    assert manifest["panel"]["panel_gene_count"] == 3
+    assert report["metrics"]["panel_missing_from_data_count"] == 1
+    assert manifest["patch_provenance"]["has_coordinates"]
+    assert manifest["patch_provenance"]["has_registration_metadata"]
+
+
 def test_cli_validate_data_writes_artifacts(tmp_path: Path) -> None:
     runner = CliRunner()
     output_dir = tmp_path / "qc_cli"

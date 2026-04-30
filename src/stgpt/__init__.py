@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .config import DataConfig, ModelConfig, SplitConfig, StGPTConfig, TrainingConfig
+from .config import AblationMode, DataConfig, ModelConfig, SplitConfig, StGPTConfig, TrainingConfig
 from .data import build_training_manifest, load_xenium_case
 from .evaluation import evaluate
 from .inference import embed_anndata
@@ -19,6 +19,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "__version__",
+    "AblationMode",
     "CELL_EMBEDDING_REQUIRED_COLUMNS",
     "DataConfig",
     "ImageGeneSTGPT",
@@ -38,3 +39,4 @@ __all__ = [
     "validate_data",
     "validate_training_case",
 ]
+

@@ -75,7 +75,16 @@ def evaluate(
     prediction_summary = _prediction_summary(buffers)
     retrieval_metrics = _retrieval_metrics(cell_emb, image_emb, split_frame)
     embedding_qc = _embedding_qc(cell_emb, split_frame, case, eval_cfg)
-    metrics = _metrics_payload(prediction_summary, retrieval_metrics, embedding_qc, checkpoint_path, splits_path, eval_cfg)
+    failure_analysis = _failure_analysis(case, split_frame, eval_cfg)
+    metrics = _metrics_payload(
+        prediction_summary,
+        retrieval_metrics,
+        embedding_qc,
+        failure_analysis,
+        checkpoint_path,
+        splits_path,
+        eval_cfg,
+    )
 
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -83,15 +92,18 @@ def evaluate(
     prediction_path = out / "prediction_summary.csv"
     retrieval_path = out / "retrieval_metrics.csv"
     embedding_qc_path = out / "embedding_qc.csv"
+    failure_analysis_path = out / "failure_analysis.csv"
 
     prediction_summary.to_csv(prediction_path, index=False)
     retrieval_metrics.to_csv(retrieval_path, index=False)
     embedding_qc.to_csv(embedding_qc_path, index=False)
+    failure_analysis.to_csv(failure_analysis_path, index=False)
     metrics["artifacts"] = {
         "evaluation_metrics": str(metrics_path),
         "prediction_summary": str(prediction_path),
         "retrieval_metrics": str(retrieval_path),
         "embedding_qc": str(embedding_qc_path),
+        "failure_analysis": str(failure_analysis_path),
     }
     metrics = _json_safe(metrics)
     metrics_path.write_text(json.dumps(metrics, indent=2, allow_nan=False), encoding="utf-8")
@@ -117,6 +129,11 @@ def _load_model(checkpoint_payload: dict[str, Any], config: StGPTConfig, dataset
         dim_feedforward=config.model.dim_feedforward,
         n_expression_bins=config.model.n_expression_bins,
         image_channels=config.model.image_channels,
+        patch_scales=config.model.patch_scales,
+        use_expression_values=config.model.use_expression_values,
+        use_image_context=config.model.use_image_context,
+        use_spatial_context=config.model.use_spatial_context,
+        use_structure_context=config.model.use_structure_context and config.data.include_structure_context,
         dropout=config.model.dropout,
     )
     model.load_state_dict(checkpoint_payload["model_state"], strict=False)
@@ -238,6 +255,7 @@ def _metrics_payload(
     prediction_summary: pd.DataFrame,
     retrieval_metrics: pd.DataFrame,
     embedding_qc: pd.DataFrame,
+    failure_analysis: pd.DataFrame,
     checkpoint: Path,
     splits: Path,
     config: StGPTConfig,
@@ -252,6 +270,15 @@ def _metrics_payload(
         "n_prediction_rows": int(len(prediction_summary)),
         "n_retrieval_rows": int(len(retrieval_metrics)),
         "n_embedding_qc_rows": int(len(embedding_qc)),
+        "n_failure_analysis_rows": int(len(failure_analysis)),
+        "ablation_mode": config.training.ablation_mode,
+        "model_modalities": {
+            "use_expression_values": bool(config.model.use_expression_values),
+            "use_image_context": bool(config.model.use_image_context),
+            "use_spatial_context": bool(config.model.use_spatial_context),
+            "use_structure_context": bool(config.model.use_structure_context and config.data.include_structure_context),
+            "patch_scales": list(config.model.patch_scales),
+        },
         "overall_prediction": overall_prediction[0] if overall_prediction else {},
         "overall_retrieval": overall_retrieval,
         "overall_embedding_qc": overall_embedding,
@@ -264,6 +291,94 @@ def _split_indices(split_frame: pd.DataFrame) -> dict[str, np.ndarray]:
     for split in sorted(pd.unique(split_values)):
         indices[str(split)] = np.flatnonzero(split_values == split)
     return indices
+
+
+def _failure_analysis(case, split_frame: pd.DataFrame, config: StGPTConfig) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    split_indices = _split_indices(split_frame)
+    for split, indices in split_indices.items():
+        rows.append(
+            {
+                "split": split,
+                "category": "split",
+                "metric": "n_cells",
+                "value": float(len(indices)),
+                "detail": config.split.strategy,
+            }
+        )
+
+    patch_table = case.patch_table.copy()
+    cell_ids = _cell_ids(case)
+    patch_cell_ids = patch_table["cell_id"].dropna().astype(str) if "cell_id" in patch_table else pd.Series(dtype=str)
+    patch_cell_coverage = float(patch_cell_ids[patch_cell_ids.isin(cell_ids)].nunique() / max(1, len(cell_ids)))
+    rows.append(_failure_row("overall", "patch", "patch_rows", float(len(patch_table)), "Rows in patch manifest."))
+    rows.append(_failure_row("overall", "patch", "patch_cell_coverage", patch_cell_coverage, "Cell-level patch coverage."))
+    rows.append(_failure_row("overall", "patch", "missing_image_count", float(_missing_image_count(patch_table)), "Patch image files missing on disk."))
+
+    provenance = _patch_provenance(patch_table)
+    rows.append(
+        _failure_row(
+            "overall",
+            "registration",
+            "has_patch_coordinates",
+            float(provenance["has_coordinates"]),
+            ",".join(provenance["coordinate_columns"]) or "no coordinate columns",
+        )
+    )
+    rows.append(
+        _failure_row(
+            "overall",
+            "registration",
+            "has_registration_metadata",
+            float(provenance["has_registration_metadata"]),
+            ",".join(provenance["registration_columns"]) or "no registration columns",
+        )
+    )
+
+    panel_genes = _configured_panel_genes(config)
+    if panel_genes:
+        data_genes = _gene_names(case, config)
+        panel_set = set(panel_genes)
+        data_set = set(data_genes)
+        rows.append(_failure_row("overall", "panel", "panel_gene_count", float(len(panel_set)), "Configured panel size."))
+        rows.append(
+            _failure_row(
+                "overall",
+                "panel",
+                "missing_from_data_count",
+                float(len(panel_set.difference(data_set))),
+                "Configured panel genes absent from AnnData.",
+            )
+        )
+        rows.append(
+            _failure_row(
+                "overall",
+                "panel",
+                "outside_panel_count",
+                float(len(data_set.difference(panel_set))),
+                "AnnData genes absent from configured panel.",
+            )
+        )
+
+    for key in ("batch", "batch_id", "case_id", "slide_id", "donor_id", "stain_id", "platform"):
+        if key not in case.adata.obs.columns:
+            continue
+        values = case.adata.obs[key].astype(str).to_numpy()
+        for split, indices in split_indices.items():
+            rows.append(
+                _failure_row(
+                    split,
+                    "domain",
+                    f"{key}_unique_values",
+                    float(pd.Series(values[indices]).nunique()),
+                    key,
+                )
+            )
+    return pd.DataFrame(rows, columns=["split", "category", "metric", "value", "detail"])
+
+
+def _failure_row(split: str, category: str, metric: str, value: float, detail: str) -> dict[str, Any]:
+    return {"split": split, "category": category, "metric": metric, "value": value, "detail": detail}
 
 
 def _topk_accuracy(similarity: np.ndarray, k: int) -> float:
@@ -305,6 +420,67 @@ def _cell_ids(case) -> list[str]:
     if "cell_id" in case.adata.obs.columns:
         return case.adata.obs["cell_id"].astype(str).tolist()
     return case.adata.obs_names.astype(str).tolist()
+
+
+def _gene_names(case, config: StGPTConfig) -> list[str]:
+    if config.data.gene_name_key in case.adata.var.columns:
+        return case.adata.var[config.data.gene_name_key].astype(str).tolist()
+    return case.adata.var_names.astype(str).tolist()
+
+
+def _configured_panel_genes(config: StGPTConfig) -> list[str]:
+    genes: list[str] = []
+    if config.data.panel_genes:
+        genes.extend(str(item) for item in config.data.panel_genes)
+    panel_path = config.data.path_or_none(config.data.panel_gene_file)
+    if panel_path is not None and panel_path.exists():
+        if panel_path.suffix.lower() in {".csv", ".tsv"}:
+            sep = "\t" if panel_path.suffix.lower() == ".tsv" else ","
+            frame = pd.read_csv(panel_path, sep=sep)
+            if not frame.empty:
+                genes.extend(frame.iloc[:, 0].dropna().astype(str).tolist())
+        else:
+            genes.extend(line.strip() for line in panel_path.read_text(encoding="utf-8").splitlines())
+    seen: set[str] = set()
+    out: list[str] = []
+    for gene in genes:
+        normalized = str(gene).strip()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            out.append(normalized)
+    return out
+
+
+def _missing_image_count(patch_table: pd.DataFrame) -> int:
+    if "image_path" not in patch_table:
+        return 0
+    count = 0
+    for value in patch_table["image_path"].dropna():
+        if not Path(str(value)).exists():
+            count += 1
+    return int(count)
+
+
+def _patch_provenance(patch_table: pd.DataFrame) -> dict[str, Any]:
+    columns = [str(col) for col in patch_table.columns]
+    lowered = {col: col.lower() for col in columns}
+    coordinate_cols = [
+        col
+        for col, lower in lowered.items()
+        if lower in {"x", "y", "patch_x", "patch_y", "center_x", "center_y", "pixel_x", "pixel_y"}
+        or lower.endswith(("_x", "_y"))
+    ]
+    transform_cols = [
+        col
+        for col, lower in lowered.items()
+        if "registration" in lower or "transform" in lower or "affine" in lower or "matrix" in lower
+    ]
+    return {
+        "coordinate_columns": coordinate_cols,
+        "registration_columns": transform_cols,
+        "has_coordinates": bool(coordinate_cols),
+        "has_registration_metadata": bool(transform_cols),
+    }
 
 
 def _resolve_device(name: str) -> torch.device:

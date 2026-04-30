@@ -5,8 +5,10 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+AblationMode = Literal["full", "gene_only", "image_only", "spatial_only", "image_gene", "image_gene_spatial"]
 
 
 def _expand_env(value: Any) -> Any:
@@ -40,6 +42,8 @@ class DataConfig(BaseModel):
     spatho_run_root: str | None = None
     patch_manifest: str | None = None
     structure_assignments_csv: str | None = None
+    panel_genes: list[str] | None = None
+    panel_gene_file: str | None = None
     cluster_key: str = "cluster"
     structure_key: str = "structure_id"
     gene_name_key: str = "feature_name"
@@ -75,6 +79,11 @@ class ModelConfig(BaseModel):
     n_expression_bins: int = Field(default=51, ge=2)
     image_size: int = Field(default=224, ge=16)
     image_channels: int = Field(default=3, ge=1)
+    patch_scales: list[int] = Field(default_factory=lambda: [1])
+    use_expression_values: bool = True
+    use_image_context: bool = True
+    use_spatial_context: bool = True
+    use_structure_context: bool = True
     dropout: float = Field(default=0.1, ge=0.0, le=0.9)
 
     @field_validator("n_heads")
@@ -83,6 +92,16 @@ class ModelConfig(BaseModel):
         if value < 1:
             raise ValueError("n_heads must be positive")
         return value
+
+    @field_validator("patch_scales")
+    @classmethod
+    def _validate_patch_scales(cls, value: list[int]) -> list[int]:
+        scales = sorted({int(item) for item in value})
+        if not scales:
+            raise ValueError("model.patch_scales must contain at least one positive scale")
+        if any(scale < 1 for scale in scales):
+            raise ValueError("model.patch_scales values must be positive integers")
+        return scales
 
 
 class TrainingConfig(BaseModel):
@@ -101,6 +120,7 @@ class TrainingConfig(BaseModel):
     device: str = "auto"
     num_workers: int = Field(default=0, ge=0)
     seed: int = 0
+    ablation_mode: AblationMode | None = None
 
     @property
     def output_path(self) -> Path:
@@ -110,7 +130,8 @@ class TrainingConfig(BaseModel):
 class SplitConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    strategy: Literal["spatial_block"] = "spatial_block"
+    strategy: Literal["spatial_block", "group_holdout"] = "spatial_block"
+    group_key: str | None = None
     train_fraction: float = Field(default=0.70, ge=0.0, le=1.0)
     val_fraction: float = Field(default=0.15, ge=0.0, le=1.0)
     test_fraction: float = Field(default=0.15, ge=0.0, le=1.0)
@@ -140,7 +161,8 @@ class StGPTConfig(BaseModel):
         config_path = Path(path).expanduser().resolve()
         payload = _expand_env(_load_mapping(config_path))
         cfg = cls.model_validate(payload)
-        return cfg.apply_preset(preset)
+        cfg = cfg.apply_preset(preset)
+        return cfg.apply_ablation(cfg.training.ablation_mode)
 
     def apply_preset(self, preset: str | None) -> StGPTConfig:
         if preset is None:
@@ -158,6 +180,63 @@ class StGPTConfig(BaseModel):
             payload["training"]["num_workers"] = max(int(payload["training"]["num_workers"]), 2)
         else:
             raise ValueError("preset must be one of: smoke, pdc")
+        return type(self).model_validate(payload)
+
+    def apply_ablation(self, mode: AblationMode | str | None) -> StGPTConfig:
+        if mode is None:
+            return self
+        normalized = str(mode).strip().lower()
+        if normalized not in {"full", "gene_only", "image_only", "spatial_only", "image_gene", "image_gene_spatial"}:
+            raise ValueError(
+                "ablation mode must be one of: full, gene_only, image_only, spatial_only, image_gene, image_gene_spatial"
+            )
+        payload = self.model_dump()
+        payload["training"]["ablation_mode"] = normalized
+        model = payload["model"]
+        training = payload["training"]
+
+        if normalized == "full":
+            model["use_expression_values"] = True
+            model["use_image_context"] = True
+            model["use_spatial_context"] = True
+            model["use_structure_context"] = True
+        elif normalized == "gene_only":
+            model["use_expression_values"] = True
+            model["use_image_context"] = False
+            model["use_spatial_context"] = False
+            model["use_structure_context"] = False
+            training["image_gene_loss_weight"] = 0.0
+            training["neighborhood_loss_weight"] = 0.0
+            training["structure_loss_weight"] = 0.0
+        elif normalized == "image_only":
+            model["use_expression_values"] = False
+            model["use_image_context"] = True
+            model["use_spatial_context"] = False
+            model["use_structure_context"] = False
+            training["image_gene_loss_weight"] = 0.0
+            training["neighborhood_loss_weight"] = 0.0
+            training["structure_loss_weight"] = 0.0
+        elif normalized == "spatial_only":
+            model["use_expression_values"] = False
+            model["use_image_context"] = False
+            model["use_spatial_context"] = True
+            model["use_structure_context"] = False
+            training["image_gene_loss_weight"] = 0.0
+            training["neighborhood_loss_weight"] = 0.0
+            training["structure_loss_weight"] = 0.0
+        elif normalized == "image_gene":
+            model["use_expression_values"] = True
+            model["use_image_context"] = True
+            model["use_spatial_context"] = False
+            model["use_structure_context"] = False
+            training["neighborhood_loss_weight"] = 0.0
+            training["structure_loss_weight"] = 0.0
+        elif normalized == "image_gene_spatial":
+            model["use_expression_values"] = True
+            model["use_image_context"] = True
+            model["use_spatial_context"] = True
+            model["use_structure_context"] = False
+            training["structure_loss_weight"] = 0.0
         return type(self).model_validate(payload)
 
     def resolved_output_dir(self) -> Path:

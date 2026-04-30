@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import torch
 from typer.testing import CliRunner
 
 from stgpt.cli import app
@@ -55,3 +56,12 @@ def test_cli_doctor_and_train(tmp_path: Path) -> None:
     result = runner.invoke(app, ["train", "--config", str(config), "--preset", "smoke", "--max-steps", "1"])
     assert result.exit_code == 0, result.output
     assert "checkpoint" in result.output
+
+
+def test_train_ablation_records_config(tmp_path: Path) -> None:
+    result = train(_write_config(tmp_path), preset="smoke", max_steps=1, ablation="gene_only")
+    checkpoint = Path(result["checkpoint"])
+    payload = torch.load(checkpoint, map_location="cpu")
+    assert payload["config"]["training"]["ablation_mode"] == "gene_only"
+    assert not payload["config"]["model"]["use_image_context"]
+    assert payload["config"]["training"]["image_gene_loss_weight"] == 0.0
