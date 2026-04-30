@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 
 from stgpt.cli import app
 from stgpt.config import DataConfig, ModelConfig, SplitConfig, StGPTConfig, TrainingConfig
-from stgpt.data import make_synthetic_case
+from stgpt.data import ensure_region_training_case, make_synthetic_case
 from stgpt.qc import make_splits, validate_data, validate_training_case
 
 
@@ -77,10 +77,13 @@ def test_validate_data_writes_qc_artifacts(tmp_path: Path) -> None:
     report = json.loads(Path(result["qc_report_json"]).read_text(encoding="utf-8"))
     splits = pd.read_csv(result["splits"])
     assert manifest["n_cells"] == 18
-    assert manifest["patch_count"] == 18
-    assert report["metrics"]["patch_cell_coverage"] == 1.0
-    assert len(splits) == 18
-    assert set(splits["split"]) == {"train", "val", "test"}
+    assert manifest["training_unit"] == "region"
+    assert manifest["patch_count"] == manifest["n_regions"]
+    assert report["metrics"]["region_image_coverage"] == 1.0
+    assert len(splits) == manifest["n_regions"]
+    assert "region_id" in splits.columns
+    assert set(splits["split"]).issubset({"train", "val", "test"})
+    assert "train" in set(splits["split"])
 
 
 def test_missing_patch_paths_are_reported(tmp_path: Path) -> None:
@@ -108,7 +111,13 @@ def test_duplicate_gene_names_are_reported(tmp_path: Path) -> None:
 def test_structure_context_coverage_is_reported(tmp_path: Path) -> None:
     cfg = _config(tmp_path, include_structure_context=True)
     case = make_synthetic_case(cfg.data)
-    del case.adata.obs[cfg.data.structure_key]
+    for column in (cfg.data.structure_key, "structure_label"):
+        if column in case.adata.obs:
+            del case.adata.obs[column]
+        if column in case.patch_table:
+            del case.patch_table[column]
+    if "structure_name" in case.patch_table:
+        del case.patch_table["structure_name"]
     result = validate_training_case(case, cfg, output_dir=tmp_path / "qc_structure_context")
     report = json.loads(Path(result["qc_report_json"]).read_text(encoding="utf-8"))
     assert report["metrics"]["structure_assignment_coverage"] == 0.0
@@ -131,10 +140,25 @@ def test_group_holdout_splits_keep_groups_together(tmp_path: Path) -> None:
     payload["split"]["strategy"] = "group_holdout"
     payload["split"]["group_key"] = "slide_id"
     cfg = StGPTConfig.model_validate(payload)
+    case = ensure_region_training_case(case, cfg)
     splits = make_splits(case, cfg)
-    joined = splits.join(case.adata.obs[["slide_id"]].reset_index(drop=True))
+    joined = splits.merge(case.region_table[["region_id", "slide_id"]], on="region_id", how="left")
     assert joined.groupby("slide_id")["split"].nunique().max() == 1
     assert set(splits["split"]).issubset({"train", "val", "test"})
+
+
+def test_slide_holdout_uses_slide_or_patient_as_group(tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    case = make_synthetic_case(cfg.data)
+    case.adata.obs["slide_id"] = [f"slide_{idx % 4}" for idx in range(case.adata.n_obs)]
+    payload = cfg.model_dump()
+    payload["split"]["strategy"] = "slide_holdout"
+    cfg = StGPTConfig.model_validate(payload)
+    case = ensure_region_training_case(case, cfg)
+    splits = make_splits(case, cfg)
+    joined = splits.merge(case.region_table[["region_id", "slide_id"]], on="region_id", how="left")
+    assert joined.groupby("slide_id")["split"].nunique().max() == 1
+    assert set(splits["split_group_key"]) == {"slide_id"}
 
 
 def test_panel_and_patch_provenance_are_reported(tmp_path: Path) -> None:
@@ -146,6 +170,7 @@ def test_panel_and_patch_provenance_are_reported(tmp_path: Path) -> None:
     manifest = json.loads(Path(result["case_manifest"]).read_text(encoding="utf-8"))
     report = json.loads(Path(result["qc_report_json"]).read_text(encoding="utf-8"))
     assert manifest["panel"]["panel_gene_count"] == 3
+    assert "domain_counts" in manifest
     assert report["metrics"]["panel_missing_from_data_count"] == 1
     assert manifest["patch_provenance"]["has_coordinates"]
     assert manifest["patch_provenance"]["has_registration_metadata"]

@@ -1,22 +1,20 @@
-case_name: atera_wta_breast
+case_name: atera_wta_breast_slide
 data:
-  mode: xenium
-  dataset_root: ${STGPT_XENIUM_ROOT}
-  spatho_run_root: ${STGPT_SPATHO_RUN_ROOT}
-  output_dir: ${STGPT_OUTPUT_ROOT}/atera_wta_breast
+  mode: xenium_slide
+  slide_store: outputs/xenium_slides/atera/breast/xenium_slide.zarr
+  patch_manifest: outputs/xenium_slides/atera/breast/contour_patches_manifest.json
+  output_dir: outputs/xenium_slides/atera/stgpt/breast
   slide_id: atera_wta_breast_preview
   organ: breast
   batch_id: atera_wta_preview
   stain: H&E
-  patch_manifest: ${STGPT_SPATHO_RUN_ROOT}/spatho/he_foundation/he_contour_patches_manifest.json
-  structure_assignments_csv: ${STGPT_SPATHO_RUN_ROOT}/spatho/structure_assignments.csv
-  panel_gene_file: ${STGPT_XENIUM_PANEL_GENES}
   cluster_key: cluster
   structure_key: structure_id
   region_id_key: contour_id
   min_cells_per_region: 1
   gene_name_key: feature_name
   spatial_key: spatial
+  include_structure_context: true
   image_size: 224
 model:
   d_model: 256
@@ -41,11 +39,10 @@ training:
   structure_loss_warmup_steps: 1000
   mask_probability: 0.15
   neighborhood_k: 8
-  output_dir: ${STGPT_OUTPUT_ROOT}/atera_wta_breast/train
+  output_dir: outputs/xenium_slides/atera/stgpt/breast/train
   device: cuda
   num_workers: 4
 split:
-  # Use slide_holdout with group_key: slide_id for multi-slide corpus training.
   strategy: spatial_block
   train_fraction: 0.70
   val_fraction: 0.15

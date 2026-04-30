@@ -35,20 +35,31 @@ def _load_mapping(path: Path) -> dict[str, Any]:
 class DataConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    mode: Literal["synthetic", "xenium", "anndata"] = "synthetic"
+    mode: Literal["synthetic", "xenium", "xenium_slide", "anndata", "corpus"] = "synthetic"
     output_dir: str = "outputs/stgpt"
     dataset_root: str | None = None
+    slide_store: str | None = None
+    dataset_roots: list[str] | None = None
     input_h5ad: str | None = None
+    input_h5ad_list: list[str] | None = None
     spatho_run_root: str | None = None
     patch_manifest: str | None = None
     structure_assignments_csv: str | None = None
     panel_genes: list[str] | None = None
     panel_gene_file: str | None = None
+    slide_id: str | None = None
+    patient_id: str | None = None
+    organ: str | None = None
+    batch_id: str | None = None
+    stain: str | None = None
+    scanner: str | None = None
     cluster_key: str = "cluster"
     structure_key: str = "structure_id"
+    region_id_key: str = "contour_id"
     gene_name_key: str = "feature_name"
     spatial_key: str = "spatial"
     include_structure_context: bool = False
+    min_cells_per_region: int = Field(default=1, ge=0)
     n_cells: int = Field(default=32, ge=2)
     n_genes: int = Field(default=64, ge=4)
     n_structures: int = Field(default=4, ge=1)
@@ -62,6 +73,10 @@ class DataConfig(BaseModel):
         if "$" in expanded or "%" in expanded:
             return None
         return Path(expanded).expanduser()
+
+    def paths_or_empty(self, values: list[str] | None) -> list[Path]:
+        paths = [self.path_or_none(value) for value in values or []]
+        return [path for path in paths if path is not None]
 
     @property
     def output_path(self) -> Path:
@@ -80,10 +95,12 @@ class ModelConfig(BaseModel):
     image_size: int = Field(default=224, ge=16)
     image_channels: int = Field(default=3, ge=1)
     patch_scales: list[int] = Field(default_factory=lambda: [1])
+    max_cells_per_region: int = Field(default=64, ge=1)
     use_expression_values: bool = True
     use_image_context: bool = True
     use_spatial_context: bool = True
     use_structure_context: bool = True
+    use_cell_context: bool = True
     dropout: float = Field(default=0.1, ge=0.0, le=0.9)
 
     @field_validator("n_heads")
@@ -111,11 +128,17 @@ class TrainingConfig(BaseModel):
     learning_rate: float = Field(default=1e-4, gt=0)
     weight_decay: float = Field(default=0.01, ge=0)
     max_steps: int = Field(default=1000, ge=1)
+    warmup_steps: int = Field(default=0, ge=0)
+    lr_schedule: Literal["none", "cosine", "onecycle"] = "none"
+    save_every_n_steps: int | None = Field(default=None, ge=1)
     mask_probability: float = Field(default=0.15, gt=0.0, lt=1.0)
     neighborhood_k: int = Field(default=8, ge=1)
     image_gene_loss_weight: float = Field(default=0.1, ge=0.0)
     neighborhood_loss_weight: float = Field(default=0.25, ge=0.0)
     structure_loss_weight: float = Field(default=0.1, ge=0.0)
+    image_gene_loss_warmup_steps: int = Field(default=0, ge=0)
+    neighborhood_loss_warmup_steps: int = Field(default=0, ge=0)
+    structure_loss_warmup_steps: int = Field(default=0, ge=0)
     output_dir: str = "outputs/stgpt/train"
     device: str = "auto"
     num_workers: int = Field(default=0, ge=0)
@@ -130,7 +153,7 @@ class TrainingConfig(BaseModel):
 class SplitConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    strategy: Literal["spatial_block", "group_holdout"] = "spatial_block"
+    strategy: Literal["spatial_block", "group_holdout", "slide_holdout"] = "spatial_block"
     group_key: str | None = None
     train_fraction: float = Field(default=0.70, ge=0.0, le=1.0)
     val_fraction: float = Field(default=0.15, ge=0.0, le=1.0)
@@ -200,11 +223,13 @@ class StGPTConfig(BaseModel):
             model["use_image_context"] = True
             model["use_spatial_context"] = True
             model["use_structure_context"] = True
+            model["use_cell_context"] = True
         elif normalized == "gene_only":
             model["use_expression_values"] = True
             model["use_image_context"] = False
             model["use_spatial_context"] = False
             model["use_structure_context"] = False
+            model["use_cell_context"] = False
             training["image_gene_loss_weight"] = 0.0
             training["neighborhood_loss_weight"] = 0.0
             training["structure_loss_weight"] = 0.0
@@ -213,6 +238,7 @@ class StGPTConfig(BaseModel):
             model["use_image_context"] = True
             model["use_spatial_context"] = False
             model["use_structure_context"] = False
+            model["use_cell_context"] = False
             training["image_gene_loss_weight"] = 0.0
             training["neighborhood_loss_weight"] = 0.0
             training["structure_loss_weight"] = 0.0
@@ -221,6 +247,7 @@ class StGPTConfig(BaseModel):
             model["use_image_context"] = False
             model["use_spatial_context"] = True
             model["use_structure_context"] = False
+            model["use_cell_context"] = False
             training["image_gene_loss_weight"] = 0.0
             training["neighborhood_loss_weight"] = 0.0
             training["structure_loss_weight"] = 0.0
@@ -229,6 +256,7 @@ class StGPTConfig(BaseModel):
             model["use_image_context"] = True
             model["use_spatial_context"] = False
             model["use_structure_context"] = False
+            model["use_cell_context"] = False
             training["neighborhood_loss_weight"] = 0.0
             training["structure_loss_weight"] = 0.0
         elif normalized == "image_gene_spatial":
@@ -236,6 +264,7 @@ class StGPTConfig(BaseModel):
             model["use_image_context"] = True
             model["use_spatial_context"] = True
             model["use_structure_context"] = False
+            model["use_cell_context"] = False
             training["structure_loss_weight"] = 0.0
         return type(self).model_validate(payload)
 

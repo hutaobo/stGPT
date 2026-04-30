@@ -13,9 +13,14 @@ from torch import Tensor, nn
 class ImageGeneSTGPTOutput:
     gene_pred: Tensor
     neighbor_pred: Tensor
-    cell_emb: Tensor
+    region_emb: Tensor
     image_emb: Tensor
     structure_logits: Tensor | None
+
+    @property
+    def cell_emb(self) -> Tensor:
+        """Compatibility alias; stGPT now trains region embeddings."""
+        return self.region_emb
 
 
 class PatchEncoder(nn.Module):
@@ -70,6 +75,7 @@ class ImageGeneSTGPT(nn.Module):
         use_image_context: bool = True,
         use_spatial_context: bool = True,
         use_structure_context: bool = True,
+        use_cell_context: bool = True,
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
@@ -82,12 +88,14 @@ class ImageGeneSTGPT(nn.Module):
         self.use_image_context = bool(use_image_context)
         self.use_spatial_context = bool(use_spatial_context)
         self.use_structure_context = bool(use_structure_context)
+        self.use_cell_context = bool(use_cell_context)
         self.gene_embedding = nn.Embedding(self.n_genes + 1, d_model, padding_idx=0)
         self.expression_value = nn.Sequential(nn.Linear(1, d_model), nn.GELU(), nn.LayerNorm(d_model))
         self.expression_bin = nn.Embedding(n_expression_bins, d_model)
         self.patch_encoder = PatchEncoder(image_channels, d_model, scales=patch_scales)
         self.spatial_encoder = nn.Sequential(nn.Linear(2, d_model), nn.GELU(), nn.LayerNorm(d_model))
         self.context_embedding = nn.Embedding(self.n_structures + 1, d_model, padding_idx=0)
+        self.cell_context_norm = nn.LayerNorm(d_model)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
@@ -151,6 +159,12 @@ class ImageGeneSTGPT(nn.Module):
             dim_feedforward=cfg.model.dim_feedforward,
             n_expression_bins=cfg.model.n_expression_bins,
             image_channels=cfg.model.image_channels,
+            patch_scales=cfg.model.patch_scales,
+            use_expression_values=cfg.model.use_expression_values,
+            use_image_context=cfg.model.use_image_context,
+            use_spatial_context=cfg.model.use_spatial_context,
+            use_structure_context=cfg.model.use_structure_context,
+            use_cell_context=cfg.model.use_cell_context,
             dropout=cfg.model.dropout,
         )
         model.load_state_dict(payload["model_state"], strict=False)
@@ -186,6 +200,8 @@ class ImageGeneSTGPT(nn.Module):
         spatial: Tensor,
         context_ids: Tensor | None = None,
         gene_padding_mask: Tensor | None = None,
+        cell_expr_values: Tensor | None = None,
+        cell_token_mask: Tensor | None = None,
     ) -> ImageGeneSTGPTOutput:
         batch_size, seq_len = gene_ids.shape
         if gene_padding_mask is None:
@@ -211,25 +227,51 @@ class ImageGeneSTGPT(nn.Module):
         context_emb = self.context_embedding(context_ids.clamp(min=0, max=self.n_structures))
         if not self.use_structure_context:
             context_emb = torch.zeros_like(context_emb)
+        cell_tokens, cell_padding_mask = self._cell_context_tokens(gene_tok, cell_expr_values, cell_token_mask)
         cls = self.cls_token.expand(batch_size, -1, -1)
         prefix = torch.stack([image_emb, spatial_emb, context_emb], dim=1)
-        tokens = torch.cat([cls, prefix, gene_tokens], dim=1)
+        tokens = torch.cat([cls, prefix, cell_tokens, gene_tokens], dim=1)
 
         prefix_mask = torch.zeros(batch_size, 4, dtype=torch.bool, device=gene_ids.device)
-        padding_mask = torch.cat([prefix_mask, gene_padding_mask], dim=1)
+        padding_mask = torch.cat([prefix_mask, cell_padding_mask, gene_padding_mask], dim=1)
         encoded = self.final_norm(self.transformer(tokens, src_key_padding_mask=padding_mask))
-        cell_emb = encoded[:, 0, :]
-        gene_out = encoded[:, 4 : 4 + seq_len, :]
+        region_emb = encoded[:, 0, :]
+        gene_start = 4 + cell_tokens.shape[1]
+        gene_out = encoded[:, gene_start : gene_start + seq_len, :]
         gene_pred = self.gene_decoder(gene_out).squeeze(-1)
         neighbor_pred = self.neighbor_decoder(gene_out).squeeze(-1)
-        structure_logits = self.structure_head(cell_emb) if self.structure_head is not None else None
+        structure_logits = self.structure_head(region_emb) if self.structure_head is not None else None
         return ImageGeneSTGPTOutput(
             gene_pred=gene_pred,
             neighbor_pred=neighbor_pred,
-            cell_emb=F.normalize(cell_emb, dim=1),
+            region_emb=F.normalize(region_emb, dim=1),
             image_emb=F.normalize(image_emb, dim=1),
             structure_logits=structure_logits,
         )
+
+    def _cell_context_tokens(
+        self,
+        gene_tok: Tensor,
+        cell_expr_values: Tensor | None,
+        cell_token_mask: Tensor | None,
+    ) -> tuple[Tensor, Tensor]:
+        batch_size, seq_len, d_model = gene_tok.shape
+        device = gene_tok.device
+        if cell_expr_values is None or cell_expr_values.numel() == 0 or not self.use_cell_context:
+            return torch.zeros(batch_size, 0, d_model, device=device), torch.zeros(batch_size, 0, dtype=torch.bool, device=device)
+        cell_expr_values = cell_expr_values.to(device)
+        if cell_token_mask is None:
+            cell_token_mask = torch.zeros(cell_expr_values.shape[:2], dtype=torch.bool, device=device)
+        else:
+            cell_token_mask = cell_token_mask.to(device)
+        cell_values = self.expression_value(cell_expr_values.unsqueeze(-1))
+        cell_gene_tokens = gene_tok.unsqueeze(1) + cell_values
+        gene_mask = gene_tok.abs().sum(dim=-1).gt(0).float()
+        denom = gene_mask.sum(dim=1, keepdim=True).clamp_min(1.0).unsqueeze(-1)
+        tokens = (cell_gene_tokens * gene_mask[:, None, :, None]).sum(dim=2) / denom
+        tokens = self.cell_context_norm(tokens)
+        tokens = torch.where(cell_token_mask.unsqueeze(-1), torch.zeros_like(tokens), tokens)
+        return tokens, cell_token_mask
 
 
 def _resolve_device(name: str) -> torch.device:

@@ -22,6 +22,8 @@ def _config(tmp_path: Path, *, mode: str = "synthetic", input_h5ad: Path | None 
             mode=mode,
             input_h5ad=str(input_h5ad) if input_h5ad is not None else None,
             output_dir=str(tmp_path / f"{mode}_case"),
+            slide_id="eval_slide",
+            batch_id="eval_batch",
             n_cells=18,
             n_genes=24,
             n_structures=3,
@@ -82,18 +84,31 @@ def _checkpoint_and_splits(tmp_path: Path) -> tuple[StGPTConfig, Path, Path]:
 def test_evaluate_synthetic_checkpoint_writes_artifacts(tmp_path: Path) -> None:
     cfg, checkpoint, splits = _checkpoint_and_splits(tmp_path)
     result = evaluate(checkpoint=checkpoint, config=cfg, splits=splits, output_dir=tmp_path / "eval", batch_size=6, device="cpu")
-    for key in ("evaluation_metrics", "prediction_summary", "retrieval_metrics", "embedding_qc", "failure_analysis"):
+    for key in (
+        "evaluation_metrics",
+        "prediction_summary",
+        "retrieval_metrics",
+        "embedding_qc",
+        "label_retrieval_metrics",
+        "batch_mixing_metrics",
+        "failure_analysis",
+    ):
         assert Path(result["artifacts"][key]).exists()
     prediction = pd.read_csv(result["artifacts"]["prediction_summary"])
     retrieval = pd.read_csv(result["artifacts"]["retrieval_metrics"])
     embedding_qc = pd.read_csv(result["artifacts"]["embedding_qc"])
+    label_retrieval = pd.read_csv(result["artifacts"]["label_retrieval_metrics"])
+    batch_mixing = pd.read_csv(result["artifacts"]["batch_mixing_metrics"])
     failure_analysis = pd.read_csv(result["artifacts"]["failure_analysis"])
     assert {"overall", "train", "val", "test"}.issubset(set(prediction["split"]))
     assert {"image_to_gene_topk", "gene_to_image_topk"}.issubset(retrieval.columns)
     assert {"cluster", "structure_id"}.issubset(set(embedding_qc["label_column"]))
+    assert "same_label_recall" in label_retrieval.columns
+    assert "batch_mixing_entropy" in batch_mixing.columns
     assert {"patch", "registration", "split"}.issubset(set(failure_analysis["category"]))
     metrics = json.loads(Path(result["artifacts"]["evaluation_metrics"]).read_text(encoding="utf-8"))
     assert metrics["overall_prediction"]["n_masked_gene_values"] > 0
+    assert metrics["n_label_retrieval_rows"] > 0
     assert metrics["n_failure_analysis_rows"] > 0
 
 

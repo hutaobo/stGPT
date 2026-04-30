@@ -1,12 +1,14 @@
 # stGPT Foundation Model Development Requirements
 
-Status: Draft v0.1  
-Audience: stGPT and spatho developers  
+Status: Draft v0.1
+Audience: stGPT and spatho developers
 Primary goal: guide development from the current Xenium-first prototype toward a reproducible morpho-molecular foundation model and an agentic spatial pathology workbench.
+
+Companion guidance: [`contour_region_foundation_model.md`](contour_region_foundation_model.md) defines the preferred final product shape where contour and region embeddings are the primary runtime output, while cell-level data remains the auditable molecular evidence layer.
 
 ## 1. Product Thesis
 
-stGPT encodes morpho-molecular tissue. spatho turns that encoding into auditable, reproducible spatial pathology evidence.
+stGPT learns reusable contour/region morpho-molecular representations; spatho plans, validates, and turns them into auditable spatial pathology evidence.
 
 The target system is a closed scientific loop:
 
@@ -17,7 +19,7 @@ Raw Data -> stgpt.contracts -> stgpt.foundation -> stgpt.runtime -> spatho.workb
         stgpt.evidence <- Audit Trail and Evidence Graph <- spatho.reports
 ```
 
-stGPT should not be positioned as only an H&E-to-expression predictor. It should learn reusable Xenium-centered tissue representations from real spatial transcriptomics cases through masked molecular modeling, image-gene alignment, spatial niche reconstruction, and panel-aware imputation.
+stGPT should not be positioned as only an H&E-to-expression predictor. It should learn reusable Xenium-centered tissue representations from real spatial transcriptomics cases through masked molecular modeling, image-gene alignment, spatial niche reconstruction, and panel-aware imputation. The preferred runtime representation is contour/region-level, with cell-level data retained as the traceable molecular evidence layer.
 
 spatho should not be positioned as only a web wrapper. It should become an agentic spatial pathology workbench that calls stGPT, HistoSeg, QC tools, and evidence judges to produce traceable biological claims.
 
@@ -27,7 +29,7 @@ stGPT can be called a foundation model only when one checkpoint supports multipl
 
 Minimum qualifying capabilities:
 
-- Generate useful cell, niche, and region embeddings for unseen Xenium slides.
+- Generate useful contour/region embeddings for unseen Xenium slides, with cell, niche, and region evidence available for provenance.
 - Support image-gene retrieval between H&E patches, cells, and spatial regions.
 - Perform panel-aware reconstruction or imputation inside the measured Xenium panel.
 - Improve niche discovery, structure annotation, or region comparison over simple baselines.
@@ -169,13 +171,17 @@ Failure registry requirements:
 
 Required Python tools:
 
-- `embed_cells`
+- `validate_case`
 - `embed_regions`
+- `summarize_structures`
 - `retrieve_regions`
-- `impute_panel`
+- `impute_region_panel`
 - `score_niche`
 - `compare_regions`
-- `explain_structure`
+- `explain_region`
+- `export_spatho_artifacts`
+- `embed_regions`
+- `embed_cells` as a deprecated compatibility wrapper
 - `evaluate_checkpoint`
 
 Each tool must define:
@@ -188,6 +194,8 @@ Each tool must define:
 - Audit log event.
 - Evidence identifiers for downstream reports.
 
+Every runtime output must include evidence IDs, input fingerprints, config fingerprints, checkpoint or checkpoint-card fingerprints, QC verdicts, warnings, output fingerprints, and audit metadata. Runtime tools should prefer typed return objects and artifact manifests over free-form dictionaries once the contract stabilizes.
+
 MCP support should wrap the stable Python API after the Python contract is reliable. MCP tools must be discoverable and schema-first.
 
 Audit logging requirements:
@@ -199,6 +207,14 @@ Audit logging requirements:
 ## 8. spatho Workbench Requirements
 
 `spatho.workbench` is the agentic orchestration layer. It should plan analyses, call stGPT tools, call HistoSeg or geometry tools, run evidence judges, and create evidence chains.
+
+Required operating loop:
+
+```text
+Plan -> Tool Calls -> QC/Critic -> Evidence Graph -> Report -> Human Review -> Model Improvement
+```
+
+This loop is a development requirement, not only a product story. `spatho` should decide which analysis paths are valid, execute deterministic and model-backed tools, critique results with guardrails, build an evidence graph, and route low-confidence or conflict-heavy outputs to human review.
 
 Design rule:
 
@@ -346,7 +362,7 @@ Acceptance criteria:
 2. Add checkpoint cards to stGPT training outputs.
 3. Move current QC and evaluation logic toward `stgpt.evidence`.
 4. Add split fingerprints and data fingerprints.
-5. Add Python runtime APIs for `embed_cells`, `retrieve_regions`, and `impute_panel`.
+5. Add Python runtime APIs for `embed_regions`, `retrieve_regions`, and `impute_panel`; keep `embed_cells` only as a compatibility wrapper.
 6. Add evidence chain IDs to runtime outputs.
 7. Make spatho consume runtime outputs and produce claim graphs.
 8. Add report reproduction command.

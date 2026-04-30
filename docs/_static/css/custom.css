@@ -1,0 +1,35 @@
+.bd-main .bd-content .bd-article-container {
+  max-width: 980px;
+}
+
+.stgpt-hero {
+  margin: 0.5rem 0 1.5rem;
+  color: var(--pst-color-text-muted);
+  font-size: 1.15rem;
+  line-height: 1.6;
+}
+
+.stgpt-card-grid {
+  margin-top: 1.5rem;
+}
+
+.stgpt-card-grid .sd-card {
+  border: 1px solid var(--pst-color-border);
+  border-radius: 0.5rem;
+  box-shadow: none;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease,
+    transform 150ms ease;
+}
+
+.stgpt-card-grid .sd-card:hover {
+  border-color: var(--pst-color-primary);
+  box-shadow: 0 0.35rem 1rem rgba(0, 0, 0, 0.08);
+  transform: translateY(-2px);
+}
+
+.stgpt-card-grid .sd-card-title {
+  color: var(--pst-color-primary);
+  font-weight: 650;
+}

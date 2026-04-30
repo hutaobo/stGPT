@@ -35,8 +35,12 @@ def test_model_forward_and_optimizer_step(tmp_path: Path) -> None:
         spatial=batch["spatial"],
         context_ids=batch["context_ids"],
         gene_padding_mask=batch["gene_padding_mask"],
+        cell_expr_values=batch["cell_expr_values"],
+        cell_token_mask=batch["cell_token_mask"],
     )
     assert output.gene_pred.shape == batch["target_values"].shape
+    assert output.region_emb.shape == (5, 32)
+    assert torch.equal(output.cell_emb, output.region_emb)
     losses = compute_losses(output, batch, image_gene_weight=0.1, neighborhood_weight=0.25, structure_weight=0.1)
     assert torch.isfinite(losses["loss"])
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
@@ -87,6 +91,8 @@ def test_model_multiscale_and_disabled_modalities(tmp_path: Path) -> None:
         spatial=batch["spatial"],
         context_ids=batch["context_ids"],
         gene_padding_mask=batch["gene_padding_mask"],
+        cell_expr_values=batch["cell_expr_values"],
+        cell_token_mask=batch["cell_token_mask"],
     )
     assert output.gene_pred.shape == batch["target_values"].shape
     assert torch.allclose(output.image_emb, torch.zeros_like(output.image_emb))

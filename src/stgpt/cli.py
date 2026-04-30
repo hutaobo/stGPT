@@ -124,6 +124,19 @@ def spatho_embed_command(
     typer.echo(json.dumps(result.to_dict(), indent=2))
 
 
+@app.command("embed-regions")
+def embed_regions_command(
+    model: Annotated[Path, typer.Option("--model", "-m", exists=True)],
+    config: Annotated[Path, typer.Option("--config", "-c", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    batch_size: Annotated[int, typer.Option("--batch-size")] = 32,
+    device: Annotated[str, typer.Option("--device")] = "auto",
+) -> None:
+    cfg = StGPTConfig.from_file(config)
+    result = run_spatho_export(cfg, checkpoint=model, output_dir=output, batch_size=batch_size, device=device)
+    typer.echo(json.dumps(result.to_dict(), indent=2))
+
+
 @app.command("export-spatho")
 def export_spatho(
     config: Annotated[Path, typer.Option("--config", "-c", exists=True)],

@@ -11,7 +11,7 @@ from sklearn.metrics import silhouette_score
 from torch.utils.data import DataLoader
 
 from .config import StGPTConfig
-from .data import ImageGeneDataset, build_training_case
+from .data import RegionDataset, build_training_case
 from .models import ImageGeneSTGPT
 
 
@@ -35,12 +35,12 @@ def evaluate(
     eval_cfg = _merge_eval_config(checkpoint_cfg, user_cfg, batch_size=batch_size)
 
     case = build_training_case(eval_cfg)
-    dataset = ImageGeneDataset(case, eval_cfg, for_inference=True)
+    dataset = RegionDataset(case, eval_cfg, for_inference=True)
     checkpoint_genes = tuple(str(item) for item in checkpoint_payload.get("vocab", {}).get("genes", []))
     if checkpoint_genes and checkpoint_genes != dataset.vocab.genes:
         raise ValueError("Evaluation data gene vocabulary does not match the checkpoint vocabulary.")
 
-    split_frame = _load_splits(splits_path, _cell_ids(case))
+    split_frame = _load_splits(splits_path, dataset.region_ids)
     target = _resolve_device(device)
     model = _load_model(checkpoint_payload, eval_cfg, dataset).to(target)
     model.eval()
@@ -55,7 +55,7 @@ def evaluate(
         for batch in loader:
             batch_size_actual = int(batch["gene_ids"].shape[0])
             batch_splits = split_frame["split"].iloc[offset : offset + batch_size_actual].astype(str).tolist()
-            batch = {key: value.to(target) for key, value in batch.items()}
+            batch = {key: value.to(target) if isinstance(value, torch.Tensor) else value for key, value in batch.items()}
             output = model(
                 gene_ids=batch["gene_ids"],
                 expr_values=batch["expr_values"],
@@ -64,22 +64,28 @@ def evaluate(
                 spatial=batch["spatial"],
                 context_ids=batch["context_ids"],
                 gene_padding_mask=batch["gene_padding_mask"],
+                cell_expr_values=batch["cell_expr_values"],
+                cell_token_mask=batch["cell_token_mask"],
             )
             _append_prediction_buffers(buffers, batch, output, batch_splits)
-            embeddings.append(output.cell_emb.cpu().numpy())
+            embeddings.append(output.region_emb.cpu().numpy())
             image_embeddings.append(output.image_emb.cpu().numpy())
             offset += batch_size_actual
 
-    cell_emb = np.vstack(embeddings).astype(np.float32)
+    region_emb = np.vstack(embeddings).astype(np.float32)
     image_emb = np.vstack(image_embeddings).astype(np.float32)
     prediction_summary = _prediction_summary(buffers)
-    retrieval_metrics = _retrieval_metrics(cell_emb, image_emb, split_frame)
-    embedding_qc = _embedding_qc(cell_emb, split_frame, case, eval_cfg)
+    retrieval_metrics = _retrieval_metrics(region_emb, image_emb, split_frame)
+    embedding_qc = _embedding_qc(region_emb, split_frame, case, eval_cfg)
+    label_retrieval = _label_retrieval_metrics(region_emb, split_frame, case, eval_cfg)
+    batch_mixing = _batch_mixing_metrics(region_emb, split_frame, case)
     failure_analysis = _failure_analysis(case, split_frame, eval_cfg)
     metrics = _metrics_payload(
         prediction_summary,
         retrieval_metrics,
         embedding_qc,
+        label_retrieval,
+        batch_mixing,
         failure_analysis,
         checkpoint_path,
         splits_path,
@@ -92,17 +98,23 @@ def evaluate(
     prediction_path = out / "prediction_summary.csv"
     retrieval_path = out / "retrieval_metrics.csv"
     embedding_qc_path = out / "embedding_qc.csv"
+    label_retrieval_path = out / "label_retrieval_metrics.csv"
+    batch_mixing_path = out / "batch_mixing_metrics.csv"
     failure_analysis_path = out / "failure_analysis.csv"
 
     prediction_summary.to_csv(prediction_path, index=False)
     retrieval_metrics.to_csv(retrieval_path, index=False)
     embedding_qc.to_csv(embedding_qc_path, index=False)
+    label_retrieval.to_csv(label_retrieval_path, index=False)
+    batch_mixing.to_csv(batch_mixing_path, index=False)
     failure_analysis.to_csv(failure_analysis_path, index=False)
     metrics["artifacts"] = {
         "evaluation_metrics": str(metrics_path),
         "prediction_summary": str(prediction_path),
         "retrieval_metrics": str(retrieval_path),
         "embedding_qc": str(embedding_qc_path),
+        "label_retrieval_metrics": str(label_retrieval_path),
+        "batch_mixing_metrics": str(batch_mixing_path),
         "failure_analysis": str(failure_analysis_path),
     }
     metrics = _json_safe(metrics)
@@ -119,7 +131,7 @@ def _merge_eval_config(checkpoint_cfg: StGPTConfig, user_cfg: StGPTConfig, *, ba
     return StGPTConfig.model_validate(payload)
 
 
-def _load_model(checkpoint_payload: dict[str, Any], config: StGPTConfig, dataset: ImageGeneDataset) -> ImageGeneSTGPT:
+def _load_model(checkpoint_payload: dict[str, Any], config: StGPTConfig, dataset: RegionDataset) -> ImageGeneSTGPT:
     model = ImageGeneSTGPT(
         n_genes=dataset.vocab.size - 1,
         n_structures=int(checkpoint_payload.get("n_structures", dataset.n_structures)),
@@ -134,29 +146,32 @@ def _load_model(checkpoint_payload: dict[str, Any], config: StGPTConfig, dataset
         use_image_context=config.model.use_image_context,
         use_spatial_context=config.model.use_spatial_context,
         use_structure_context=config.model.use_structure_context and config.data.include_structure_context,
+        use_cell_context=config.model.use_cell_context,
         dropout=config.model.dropout,
     )
     model.load_state_dict(checkpoint_payload["model_state"], strict=False)
     return model
 
 
-def _load_splits(path: Path, cell_ids: list[str]) -> pd.DataFrame:
+def _load_splits(path: Path, region_ids: list[str]) -> pd.DataFrame:
     frame = pd.read_csv(path)
-    required = {"cell_id", "split"}
+    if "region_id" not in frame.columns and "cell_id" in frame.columns:
+        frame = frame.rename(columns={"cell_id": "region_id"})
+    required = {"region_id", "split"}
     missing = required.difference(frame.columns)
     if missing:
         raise ValueError(f"splits file is missing required columns: {sorted(missing)}")
-    frame = frame[["cell_id", "split"]].copy()
-    frame["cell_id"] = frame["cell_id"].astype(str)
+    frame = frame[["region_id", "split"]].copy()
+    frame["region_id"] = frame["region_id"].astype(str)
     frame["split"] = frame["split"].astype(str)
-    duplicate_count = int(frame["cell_id"].duplicated().sum())
+    duplicate_count = int(frame["region_id"].duplicated().sum())
     if duplicate_count:
-        raise ValueError(f"splits file contains {duplicate_count} duplicate cell_id values.")
-    indexed = frame.set_index("cell_id")
-    missing_cells = [cell_id for cell_id in cell_ids if cell_id not in indexed.index]
-    if missing_cells:
-        raise ValueError(f"splits file is missing {len(missing_cells)} cells from evaluation data.")
-    return indexed.loc[cell_ids].reset_index()
+        raise ValueError(f"splits file contains {duplicate_count} duplicate region_id values.")
+    indexed = frame.set_index("region_id")
+    missing_regions = [region_id for region_id in region_ids if region_id not in indexed.index]
+    if missing_regions:
+        raise ValueError(f"splits file is missing {len(missing_regions)} regions from evaluation data.")
+    return indexed.loc[region_ids].reset_index()
 
 
 def _new_prediction_buffers(splits: list[str]) -> dict[str, dict[str, list[np.ndarray]]]:
@@ -211,12 +226,12 @@ def _prediction_summary(buffers: dict[str, dict[str, list[np.ndarray]]]) -> pd.D
     return pd.DataFrame(rows).sort_values("split").reset_index(drop=True)
 
 
-def _retrieval_metrics(cell_emb: np.ndarray, image_emb: np.ndarray, split_frame: pd.DataFrame) -> pd.DataFrame:
+def _retrieval_metrics(region_emb: np.ndarray, image_emb: np.ndarray, split_frame: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for split, indices in _split_indices(split_frame).items():
         if len(indices) == 0:
             continue
-        sim = image_emb[indices] @ cell_emb[indices].T
+        sim = image_emb[indices] @ region_emb[indices].T
         for k in (1, 5):
             effective_k = min(k, len(indices))
             rows.append(
@@ -224,7 +239,7 @@ def _retrieval_metrics(cell_emb: np.ndarray, image_emb: np.ndarray, split_frame:
                     "split": split,
                     "k": int(k),
                     "effective_k": int(effective_k),
-                    "n_cells": int(len(indices)),
+                    "n_regions": int(len(indices)),
                     "image_to_gene_topk": _topk_accuracy(sim, effective_k),
                     "gene_to_image_topk": _topk_accuracy(sim.T, effective_k),
                 }
@@ -232,29 +247,86 @@ def _retrieval_metrics(cell_emb: np.ndarray, image_emb: np.ndarray, split_frame:
     return pd.DataFrame(rows)
 
 
-def _embedding_qc(cell_emb: np.ndarray, split_frame: pd.DataFrame, case, config: StGPTConfig) -> pd.DataFrame:
-    label_columns = [col for col in (config.data.cluster_key, config.data.structure_key) if col in case.adata.obs.columns]
+def _embedding_qc(region_emb: np.ndarray, split_frame: pd.DataFrame, case, config: StGPTConfig) -> pd.DataFrame:
+    label_columns = _meaningful_label_columns(case, config)
     rows = []
     for label_column in label_columns:
-        labels = case.adata.obs[label_column].astype(str).to_numpy()
+        labels = case.region_table[label_column].astype(str).to_numpy()
         for split, indices in _split_indices(split_frame).items():
             split_labels = labels[indices]
             rows.append(
                 {
                     "split": split,
                     "label_column": label_column,
-                    "n_cells": int(len(indices)),
+                    "n_regions": int(len(indices)),
                     "n_labels": int(pd.Series(split_labels).nunique()),
-                    "silhouette": _silhouette(cell_emb[indices], split_labels),
+                    "silhouette": _silhouette(region_emb[indices], split_labels),
                 }
             )
-    return pd.DataFrame(rows, columns=["split", "label_column", "n_cells", "n_labels", "silhouette"])
+    return pd.DataFrame(rows, columns=["split", "label_column", "n_regions", "n_labels", "silhouette"])
+
+
+def _label_retrieval_metrics(region_emb: np.ndarray, split_frame: pd.DataFrame, case, config: StGPTConfig) -> pd.DataFrame:
+    label_columns = _meaningful_label_columns(case, config)
+    rows = []
+    for label_column in label_columns:
+        labels = case.region_table[label_column].astype(str).to_numpy()
+        for split, indices in _split_indices(split_frame).items():
+            split_labels = labels[indices]
+            for k in (1, 5):
+                rows.append(
+                    {
+                        "split": split,
+                        "label_column": label_column,
+                        "k": int(k),
+                        "effective_k": int(min(k, max(0, len(indices) - 1))),
+                        "n_regions": int(len(indices)),
+                        "same_label_recall": _same_label_recall(region_emb[indices], split_labels, k),
+                    }
+                )
+    return pd.DataFrame(rows, columns=["split", "label_column", "k", "effective_k", "n_regions", "same_label_recall"])
+
+
+def _meaningful_label_columns(case, config: StGPTConfig) -> list[str]:
+    columns: list[str] = []
+    seen: set[str] = set()
+    for column in ("structure_label", "structure_id", config.data.cluster_key):
+        if column in seen or column not in case.region_table.columns:
+            continue
+        seen.add(column)
+        labels = case.region_table[column].astype(str).replace({"nan": "", "None": "", "unknown": ""})
+        if labels[labels != ""].nunique() > 1:
+            columns.append(column)
+    return columns
+
+
+def _batch_mixing_metrics(region_emb: np.ndarray, split_frame: pd.DataFrame, case) -> pd.DataFrame:
+    rows = []
+    for label_column in ("batch", "batch_id", "case_id", "slide_id", "patient_id", "stain", "scanner", "platform"):
+        if label_column not in case.region_table.columns:
+            continue
+        labels = case.region_table[label_column].astype(str).to_numpy()
+        for split, indices in _split_indices(split_frame).items():
+            for k in (5,):
+                rows.append(
+                    {
+                        "split": split,
+                        "batch_column": label_column,
+                        "k": int(k),
+                        "effective_k": int(min(k, max(0, len(indices) - 1))),
+                        "n_regions": int(len(indices)),
+                        "batch_mixing_entropy": _neighbor_entropy(region_emb[indices], labels[indices], k),
+                    }
+                )
+    return pd.DataFrame(rows, columns=["split", "batch_column", "k", "effective_k", "n_regions", "batch_mixing_entropy"])
 
 
 def _metrics_payload(
     prediction_summary: pd.DataFrame,
     retrieval_metrics: pd.DataFrame,
     embedding_qc: pd.DataFrame,
+    label_retrieval: pd.DataFrame,
+    batch_mixing: pd.DataFrame,
     failure_analysis: pd.DataFrame,
     checkpoint: Path,
     splits: Path,
@@ -263,13 +335,18 @@ def _metrics_payload(
     overall_prediction = prediction_summary[prediction_summary["split"] == "overall"].to_dict(orient="records")
     overall_retrieval = retrieval_metrics[retrieval_metrics["split"] == "overall"].to_dict(orient="records")
     overall_embedding = embedding_qc[embedding_qc["split"] == "overall"].to_dict(orient="records")
+    overall_label_retrieval = label_retrieval[label_retrieval["split"] == "overall"].to_dict(orient="records")
+    overall_batch_mixing = batch_mixing[batch_mixing["split"] == "overall"].to_dict(orient="records")
     return {
         "case_name": config.case_name,
         "checkpoint": str(checkpoint),
         "splits": str(splits),
+        "training_unit": "region",
         "n_prediction_rows": int(len(prediction_summary)),
         "n_retrieval_rows": int(len(retrieval_metrics)),
         "n_embedding_qc_rows": int(len(embedding_qc)),
+        "n_label_retrieval_rows": int(len(label_retrieval)),
+        "n_batch_mixing_rows": int(len(batch_mixing)),
         "n_failure_analysis_rows": int(len(failure_analysis)),
         "ablation_mode": config.training.ablation_mode,
         "model_modalities": {
@@ -277,11 +354,15 @@ def _metrics_payload(
             "use_image_context": bool(config.model.use_image_context),
             "use_spatial_context": bool(config.model.use_spatial_context),
             "use_structure_context": bool(config.model.use_structure_context and config.data.include_structure_context),
+            "use_cell_context": bool(config.model.use_cell_context),
             "patch_scales": list(config.model.patch_scales),
+            "max_cells_per_region": int(config.model.max_cells_per_region),
         },
         "overall_prediction": overall_prediction[0] if overall_prediction else {},
         "overall_retrieval": overall_retrieval,
         "overall_embedding_qc": overall_embedding,
+        "overall_label_retrieval": overall_label_retrieval,
+        "overall_batch_mixing": overall_batch_mixing,
     }
 
 
@@ -301,19 +382,21 @@ def _failure_analysis(case, split_frame: pd.DataFrame, config: StGPTConfig) -> p
             {
                 "split": split,
                 "category": "split",
-                "metric": "n_cells",
+                "metric": "n_regions",
                 "value": float(len(indices)),
                 "detail": config.split.strategy,
             }
         )
 
     patch_table = case.patch_table.copy()
-    cell_ids = _cell_ids(case)
-    patch_cell_ids = patch_table["cell_id"].dropna().astype(str) if "cell_id" in patch_table else pd.Series(dtype=str)
-    patch_cell_coverage = float(patch_cell_ids[patch_cell_ids.isin(cell_ids)].nunique() / max(1, len(cell_ids)))
+    region_ids = case.region_table["region_id"].astype(str).tolist() if "region_id" in case.region_table else []
+    patch_region_ids = patch_table["contour_id"].dropna().astype(str) if "contour_id" in patch_table else pd.Series(dtype=str)
+    region_image_coverage = float(patch_region_ids[patch_region_ids.isin(region_ids)].nunique() / max(1, len(region_ids)))
     rows.append(_failure_row("overall", "patch", "patch_rows", float(len(patch_table)), "Rows in patch manifest."))
-    rows.append(_failure_row("overall", "patch", "patch_cell_coverage", patch_cell_coverage, "Cell-level patch coverage."))
+    rows.append(_failure_row("overall", "patch", "region_image_coverage", region_image_coverage, "Region-level patch coverage."))
     rows.append(_failure_row("overall", "patch", "missing_image_count", float(_missing_image_count(patch_table)), "Patch image files missing on disk."))
+    if "n_cells" in case.region_table:
+        rows.append(_failure_row("overall", "region", "low_cell_region_count", float((case.region_table["n_cells"] <= 0).sum()), "Regions without member cells."))
 
     provenance = _patch_provenance(patch_table)
     rows.append(
@@ -361,9 +444,9 @@ def _failure_analysis(case, split_frame: pd.DataFrame, config: StGPTConfig) -> p
         )
 
     for key in ("batch", "batch_id", "case_id", "slide_id", "donor_id", "stain_id", "platform"):
-        if key not in case.adata.obs.columns:
+        if key not in case.region_table.columns:
             continue
-        values = case.adata.obs[key].astype(str).to_numpy()
+        values = case.region_table[key].astype(str).to_numpy()
         for split, indices in split_indices.items():
             rows.append(
                 _failure_row(
@@ -387,6 +470,39 @@ def _topk_accuracy(similarity: np.ndarray, k: int) -> float:
     topk = np.argpartition(-similarity, kth=k - 1, axis=1)[:, :k]
     labels = np.arange(similarity.shape[0])[:, None]
     return float((topk == labels).any(axis=1).mean())
+
+
+def _same_label_recall(embeddings: np.ndarray, labels: np.ndarray, k: int) -> float:
+    if embeddings.shape[0] <= 1:
+        return float("nan")
+    effective_k = min(k, embeddings.shape[0] - 1)
+    if effective_k <= 0:
+        return float("nan")
+    sim = embeddings @ embeddings.T
+    np.fill_diagonal(sim, -np.inf)
+    neighbors = np.argpartition(-sim, kth=effective_k - 1, axis=1)[:, :effective_k]
+    same = labels[neighbors] == labels[:, None]
+    return float(same.any(axis=1).mean())
+
+
+def _neighbor_entropy(embeddings: np.ndarray, labels: np.ndarray, k: int) -> float:
+    if embeddings.shape[0] <= 1:
+        return float("nan")
+    n_labels = int(pd.Series(labels).nunique())
+    if n_labels < 2:
+        return float("nan")
+    effective_k = min(k, embeddings.shape[0] - 1)
+    if effective_k <= 0:
+        return float("nan")
+    sim = embeddings @ embeddings.T
+    np.fill_diagonal(sim, -np.inf)
+    neighbors = np.argpartition(-sim, kth=effective_k - 1, axis=1)[:, :effective_k]
+    entropies = []
+    for row in neighbors:
+        counts = pd.Series(labels[row]).value_counts(normalize=True).to_numpy(dtype=np.float64)
+        entropy = -float(np.sum(counts * np.log(counts + 1e-12)))
+        entropies.append(entropy / max(1e-12, float(np.log(n_labels))))
+    return float(np.mean(entropies))
 
 
 def _silhouette(embeddings: np.ndarray, labels: np.ndarray) -> float:

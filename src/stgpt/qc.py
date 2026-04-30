@@ -9,7 +9,7 @@ import pandas as pd
 from scipy import sparse
 
 from .config import StGPTConfig
-from .data import TrainingCase, build_training_case
+from .data import TrainingCase, build_training_case, ensure_region_training_case
 
 
 def validate_data(config: StGPTConfig | str | Path, *, output_dir: str | Path | None = None) -> dict[str, Any]:
@@ -24,6 +24,7 @@ def validate_training_case(
     *,
     output_dir: str | Path | None = None,
 ) -> dict[str, Any]:
+    case = ensure_region_training_case(case, config)
     out = Path(output_dir).expanduser() if output_dir is not None else config.data.output_path / "qc"
     out.mkdir(parents=True, exist_ok=True)
 
@@ -50,11 +51,13 @@ def validate_training_case(
         "fatal_errors": report["fatal_errors"],
         "warnings": report["warnings"],
         "n_cells": manifest["n_cells"],
+        "n_regions": manifest.get("n_regions", 0),
         "n_genes": manifest["n_genes"],
     }
 
 
 def build_case_manifest(case: TrainingCase, config: StGPTConfig, output_dir: Path | None = None) -> dict[str, Any]:
+    case = ensure_region_training_case(case, config)
     adata = case.adata
     matrix = _matrix(adata)
     spatial = _spatial_array(case, config)
@@ -63,20 +66,32 @@ def build_case_manifest(case: TrainingCase, config: StGPTConfig, output_dir: Pat
     panel_genes = _panel_genes(config)
     structure_counts = _structure_counts(case, config)
     patch_provenance = _patch_provenance(patch_table)
+    n_regions = int(len(case.region_table))
+    regions_with_cells = int((case.region_table["n_cells"] > 0).sum()) if "n_cells" in case.region_table else 0
     return {
         "case_name": config.case_name,
         "mode": config.data.mode,
         "paths": {
             "dataset_root": _path_text(config.data.path_or_none(config.data.dataset_root)),
+            "slide_store": _path_text(config.data.path_or_none(config.data.slide_store)),
+            "dataset_roots": [_path_text(path) for path in config.data.paths_or_empty(config.data.dataset_roots)],
             "input_h5ad": _path_text(config.data.path_or_none(config.data.input_h5ad)),
+            "input_h5ad_list": [_path_text(path) for path in config.data.paths_or_empty(config.data.input_h5ad_list)],
             "spatho_run_root": _path_text(config.data.path_or_none(config.data.spatho_run_root)),
             "patch_manifest": _path_text(config.data.path_or_none(config.data.patch_manifest)),
             "structure_assignments_csv": _path_text(config.data.path_or_none(config.data.structure_assignments_csv)),
             "case_output_dir": str(case.output_dir),
             "qc_output_dir": str(output_dir) if output_dir is not None else None,
         },
+        "case_metadata": _case_metadata(config),
+        "domain_counts": _domain_counts(case),
         "n_cells": int(adata.n_obs),
+        "n_regions": n_regions,
+        "regions_with_cells": regions_with_cells,
         "n_genes": int(adata.n_vars),
+        "training_unit": "region",
+        "region_id_key": config.data.region_id_key,
+        "min_cells_per_region": int(config.data.min_cells_per_region),
         "gene_name_key": config.data.gene_name_key,
         "duplicate_gene_count": int(pd.Series(gene_names).duplicated().sum()),
         "panel": _panel_metrics(gene_names, panel_genes),
@@ -85,6 +100,9 @@ def build_case_manifest(case: TrainingCase, config: StGPTConfig, output_dir: Pat
         "spatial_bounds": _spatial_bounds(spatial),
         "matrix_density": _matrix_density(matrix, adata.n_obs, adata.n_vars),
         "patch_count": int(len(patch_table)),
+        "region_image_coverage": _region_image_coverage(case),
+        "cell_assignment_coverage": _cell_assignment_coverage(case),
+        "low_cell_region_count": int((case.region_table["n_cells"] < config.data.min_cells_per_region).sum()) if "n_cells" in case.region_table else 0,
         "patch_cell_count": int(patch_table["cell_id"].dropna().astype(str).nunique()) if "cell_id" in patch_table else 0,
         "patch_structure_count": int(patch_table["structure_id"].dropna().nunique()) if "structure_id" in patch_table else 0,
         "patch_provenance": patch_provenance,
@@ -103,6 +121,7 @@ def build_case_manifest(case: TrainingCase, config: StGPTConfig, output_dir: Pat
 
 
 def build_qc_report(case: TrainingCase, config: StGPTConfig, manifest: dict[str, Any] | None = None) -> dict[str, Any]:
+    case = ensure_region_training_case(case, config)
     manifest = manifest or build_case_manifest(case, config)
     adata = case.adata
     patch_table = case.patch_table.copy()
@@ -131,15 +150,13 @@ def build_qc_report(case: TrainingCase, config: StGPTConfig, manifest: dict[str,
         if panel["outside_panel_count"]:
             warnings.append(f"{panel['outside_panel_count']} data genes are outside the configured panel.")
 
-    cell_ids = _cell_ids(case)
-    patch_cell_ids = patch_table["cell_id"].dropna().astype(str) if "cell_id" in patch_table else pd.Series(dtype=str)
-    patch_cell_coverage = float(patch_cell_ids[patch_cell_ids.isin(cell_ids)].nunique() / max(1, len(cell_ids)))
+    region_image_coverage = float(manifest.get("region_image_coverage", 0.0))
     patch_structure_coverage = _patch_structure_coverage(case, config, patch_table)
     if len(patch_table) == 0:
         warnings.append("No patch manifest rows were found; image inputs will fall back to zero tensors.")
-    elif patch_cell_coverage < 1.0 and patch_structure_coverage < 1.0:
+    elif region_image_coverage < 1.0 and patch_structure_coverage < 1.0:
         warnings.append(
-            f"Patch manifest covers {patch_cell_coverage:.1%} of cells by cell_id and {patch_structure_coverage:.1%} of structures."
+            f"Patch manifest covers {region_image_coverage:.1%} of trainable regions and {patch_structure_coverage:.1%} of structures."
         )
 
     missing_image_count = _missing_image_count(patch_table)
@@ -152,8 +169,12 @@ def build_qc_report(case: TrainingCase, config: StGPTConfig, manifest: dict[str,
         warnings.append("Patch manifest lacks registration or transform metadata; H&E alignment assumptions should be documented.")
 
     structure_coverage = _structure_coverage(case, config)
-    if config.data.include_structure_context and structure_coverage < 1.0:
-        warnings.append(f"Structure context is enabled but covers {structure_coverage:.1%} of cells.")
+    if config.data.include_structure_context and structure_coverage < 0.95:
+        warnings.append(f"Structure context is enabled but covers {structure_coverage:.1%} of regions.")
+
+    n_regions = int(manifest.get("n_regions", 0))
+    if n_regions == 0:
+        fatal_errors.append("No trainable contour/region rows were found.")
 
     status = "fail" if fatal_errors else "pass"
     return {
@@ -162,8 +183,13 @@ def build_qc_report(case: TrainingCase, config: StGPTConfig, manifest: dict[str,
         "fatal_errors": fatal_errors,
         "warnings": warnings,
         "metrics": {
-            "patch_cell_coverage": patch_cell_coverage,
+            "patch_cell_coverage": region_image_coverage,
             "patch_structure_coverage": patch_structure_coverage,
+            "n_regions": n_regions,
+            "regions_with_cells": int(manifest.get("regions_with_cells", 0)),
+            "region_image_coverage": region_image_coverage,
+            "cell_assignment_coverage": float(manifest.get("cell_assignment_coverage", 0.0)),
+            "low_cell_region_count": int(manifest.get("low_cell_region_count", 0)),
             "missing_image_count": int(missing_image_count),
             "duplicate_gene_count": duplicate_gene_count,
             "missing_spatial_count": int(missing_spatial_count),
@@ -176,24 +202,33 @@ def build_qc_report(case: TrainingCase, config: StGPTConfig, manifest: dict[str,
 
 
 def make_splits(case: TrainingCase, config: StGPTConfig) -> pd.DataFrame:
-    adata = case.adata
-    cell_ids = _cell_ids(case)
-    n_cells = int(adata.n_obs)
-    if n_cells == 0:
-        return pd.DataFrame(columns=["cell_id", "split", "split_strategy", "block_id"])
+    case = ensure_region_training_case(case, config)
+    regions = case.region_table.copy()
+    if regions.empty:
+        return pd.DataFrame(columns=["region_id", "split", "split_strategy", "block_id"])
+    region_ids = regions["region_id"].astype(str).tolist()
+    n_regions = int(len(regions))
+    split_group_key = config.split.group_key
     if config.split.strategy == "group_holdout":
-        if not config.split.group_key or config.split.group_key not in adata.obs.columns:
-            raise ValueError("split.strategy='group_holdout' requires split.group_key to name an AnnData obs column.")
-        block_ids = adata.obs[config.split.group_key].fillna("missing").astype(str).to_numpy(dtype=object)
+        if not config.split.group_key or config.split.group_key not in regions.columns:
+            raise ValueError("split.strategy='group_holdout' requires split.group_key to name a region table column.")
+        block_ids = regions[config.split.group_key].fillna("missing").astype(str).to_numpy(dtype=object)
+    elif config.split.strategy == "slide_holdout":
+        key = _slide_holdout_key(regions, config)
+        split_group_key = key
+        block_ids = regions[key].fillna("missing").astype(str).to_numpy(dtype=object)
     elif config.split.strategy == "spatial_block":
-        spatial = _spatial_array(case, config)
+        if {"x", "y"}.issubset(regions.columns):
+            spatial = regions[["x", "y"]].to_numpy(dtype=np.float64)
+        else:
+            spatial = None
         if spatial is None:
-            order = np.arange(n_cells)
+            order = np.arange(n_regions)
             block_ids = np.asarray([f"idx_{idx:04d}" for idx in order], dtype=object)
         else:
             coords = np.asarray(spatial[:, :2], dtype=np.float64)
             coords[~np.isfinite(coords)] = 0.0
-            n_bins = max(2, min(32, int(np.ceil(np.sqrt(max(4.0, n_cells / 4.0))))))
+            n_bins = max(2, min(32, int(np.ceil(np.sqrt(max(4.0, n_regions / 4.0))))))
             x_bin = _rank_bins(coords[:, 0], n_bins)
             y_bin = _rank_bins(coords[:, 1], n_bins)
             block_ids = np.asarray([f"x{int(x)}_y{int(y)}" for x, y in zip(x_bin, y_bin, strict=False)], dtype=object)
@@ -203,9 +238,10 @@ def make_splits(case: TrainingCase, config: StGPTConfig) -> pd.DataFrame:
     split_values = [assignment[str(block)] for block in block_ids]
     return pd.DataFrame(
         {
-            "cell_id": cell_ids,
+            "region_id": region_ids,
             "split": split_values,
             "split_strategy": config.split.strategy,
+            "split_group_key": split_group_key,
             "block_id": block_ids,
         }
     )
@@ -221,11 +257,15 @@ def render_qc_markdown(report: dict[str, Any], manifest: dict[str, Any]) -> str:
         "",
         f"- Mode: `{manifest['mode']}`",
         f"- Cells: {manifest['n_cells']}",
+        f"- Regions: {manifest.get('n_regions', 0)}",
         f"- Genes: {manifest['n_genes']}",
         f"- Matrix density: {manifest['matrix_density']:.6f}",
         f"- Patch rows: {manifest['patch_count']}",
-        f"- Patch cell coverage: {report['metrics']['patch_cell_coverage']:.1%}",
+        f"- Region image coverage: {report['metrics'].get('region_image_coverage', 0.0):.1%}",
+        f"- Cell assignment coverage: {report['metrics'].get('cell_assignment_coverage', 0.0):.1%}",
         f"- Structure assignment coverage: {report['metrics']['structure_assignment_coverage']:.1%}",
+        f"- Slide IDs: {len(manifest['domain_counts'].get('slide_id', {}))}",
+        f"- Batch IDs: {len(manifest['domain_counts'].get('batch_id', {}))}",
         f"- Panel genes configured: {manifest['panel']['panel_gene_count']}",
         f"- Panel genes missing from data: {report['metrics']['panel_missing_from_data_count']}",
         f"- Patch coordinate columns: {', '.join(manifest['patch_provenance']['coordinate_columns']) or 'None'}",
@@ -299,10 +339,38 @@ def _cell_ids(case: TrainingCase) -> list[str]:
 
 
 def _structure_counts(case: TrainingCase, config: StGPTConfig) -> dict[str, int]:
-    if config.data.structure_key not in case.adata.obs.columns:
+    if "structure_label" in case.region_table.columns:
+        counts = case.region_table["structure_label"].astype(str).value_counts(dropna=False).sort_index()
+        return {str(key): int(value) for key, value in counts.items()}
+    if config.data.structure_key not in case.region_table.columns:
         return {}
-    counts = case.adata.obs[config.data.structure_key].astype(str).value_counts(dropna=False).sort_index()
+    counts = case.region_table[config.data.structure_key].astype(str).value_counts(dropna=False).sort_index()
     return {str(key): int(value) for key, value in counts.items()}
+
+
+def _case_metadata(config: StGPTConfig) -> dict[str, str | None]:
+    return {
+        "slide_id": config.data.slide_id,
+        "patient_id": config.data.patient_id,
+        "organ": config.data.organ,
+        "batch_id": config.data.batch_id,
+        "stain": config.data.stain,
+        "scanner": config.data.scanner,
+    }
+
+
+def _domain_counts(case: TrainingCase) -> dict[str, dict[str, int]]:
+    domains: dict[str, dict[str, int]] = {}
+    for column in ("slide_id", "patient_id", "organ", "batch_id", "stain", "scanner"):
+        if column in case.region_table.columns:
+            values = case.region_table[column].astype(str).replace({"nan": "missing", "None": "missing"})
+        elif column in case.adata.obs.columns:
+            values = case.adata.obs[column].astype(str).replace({"nan": "missing", "None": "missing"})
+        else:
+            continue
+        counts = values.value_counts(dropna=False).sort_index()
+        domains[column] = {str(key): int(value) for key, value in counts.items()}
+    return domains
 
 
 def _panel_genes(config: StGPTConfig) -> list[str]:
@@ -394,16 +462,21 @@ def _unique_nonempty(values: list[str]) -> list[str]:
 
 
 def _structure_coverage(case: TrainingCase, config: StGPTConfig) -> float:
-    if config.data.structure_key not in case.adata.obs.columns:
+    if "structure_label" in case.region_table.columns:
+        values = case.region_table["structure_label"].astype("string")
+        valid = values.notna() & ~values.isin(["", "nan", "None", "unknown"])
+        return float(valid.sum() / max(1, len(case.region_table)))
+    if config.data.structure_key not in case.region_table.columns:
         return 0.0
-    values = case.adata.obs[config.data.structure_key]
-    return float(values.notna().sum() / max(1, case.adata.n_obs))
+    values = case.region_table[config.data.structure_key].astype("string")
+    valid = values.notna() & ~values.isin(["", "nan", "None", "unknown"])
+    return float(valid.sum() / max(1, len(case.region_table)))
 
 
 def _patch_structure_coverage(case: TrainingCase, config: StGPTConfig, patch_table: pd.DataFrame) -> float:
-    if "structure_id" not in patch_table or config.data.structure_key not in case.adata.obs.columns:
+    if "structure_id" not in patch_table or "structure_id" not in case.region_table.columns:
         return 0.0
-    structures = case.adata.obs[config.data.structure_key].dropna().astype(str)
+    structures = case.region_table["structure_id"].dropna().map(_normalize_structure_id).astype(str)
     if structures.empty:
         return 0.0
     patch_structures = patch_table["structure_id"].dropna().map(_normalize_structure_id).astype(str)
@@ -418,6 +491,23 @@ def _missing_image_count(patch_table: pd.DataFrame) -> int:
         if not Path(str(value)).exists():
             count += 1
     return int(count)
+
+
+def _region_image_coverage(case: TrainingCase) -> float:
+    if case.region_table.empty or "image_path" not in case.region_table.columns:
+        return 0.0
+    valid = 0
+    for value in case.region_table["image_path"].dropna():
+        if Path(str(value)).exists():
+            valid += 1
+    return float(valid / max(1, len(case.region_table)))
+
+
+def _cell_assignment_coverage(case: TrainingCase) -> float:
+    if case.cell_membership.empty:
+        return 0.0
+    assigned = case.cell_membership["cell_id"].astype(str).nunique()
+    return float(assigned / max(1, case.adata.n_obs))
 
 
 def _assign_blocks_to_splits(block_ids: np.ndarray, config: StGPTConfig) -> dict[str, str]:
@@ -444,10 +534,22 @@ def _assign_blocks_to_splits(block_ids: np.ndarray, config: StGPTConfig) -> dict
     return assignment
 
 
+def _slide_holdout_key(frame, config: StGPTConfig) -> str:
+    if config.split.group_key:
+        if config.split.group_key not in frame.columns:
+            raise ValueError(f"split.group_key={config.split.group_key!r} is missing from region table.")
+        return config.split.group_key
+    if "slide_id" in frame.columns:
+        return "slide_id"
+    if "patient_id" in frame.columns:
+        return "patient_id"
+    raise ValueError("split.strategy='slide_holdout' requires region table slide_id or patient_id.")
+
+
 def _normalize_structure_id(value: object) -> str:
     try:
         numeric = float(str(value))
-    except ValueError:
+    except (TypeError, ValueError):
         return str(value)
     if numeric.is_integer():
         return str(int(numeric))

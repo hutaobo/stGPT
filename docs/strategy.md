@@ -1,6 +1,6 @@
 # Development Strategy: Xenium-First Image-Gene GPT for Spatial Transcriptomics
 
-This document captures the development direction for `stGPT` after reviewing closely related spatial transcriptomics, histopathology, and foundation-model methods. It is a working engineering guide, not a full literature review. The landscape snapshot is current as of 2026-04-30.
+This document captures the development direction for `stGPT` after reviewing closely related spatial transcriptomics, histopathology, agentic workbench, and foundation-model methods. It is a working engineering guide, not a full literature review. The landscape snapshot is current as of 2026-04-30.
 
 ## Project Positioning
 
@@ -28,13 +28,42 @@ Model -> Evidence -> Agent -> Human Review -> Better Model
 
 In that loop, `stGPT` owns representation learning and measured evaluation, while `spatho` owns the agentic spatial pathology workbench that turns embeddings, QC, retrieval, and benchmarks into auditable biological evidence. This mirrors current production-agent practice: tools need schemas, traces, guardrails, evaluation, and human review rather than only a chat interface. Relevant references for the workbench layer include [Google ADK](https://adk.dev/), the [MCP tools specification](https://modelcontextprotocol.io/specification/2024-11-05/server/tools), [OpenAI Agents tracing](https://openai.github.io/openai-agents-js/guides/tracing/), [OpenAI guardrails](https://openai.github.io/openai-agents-python/guardrails/), and [MLflow GenAI evaluation judges](https://mlflow.org/docs/latest/genai/eval-monitor/scorers/index.html).
 
+The shared platform sentence for the two repositories is:
+
+```text
+stGPT learns reusable contour/region morpho-molecular representations; spatho plans, validates, and turns them into auditable spatial pathology evidence.
+```
+
 ## Product Layers
 
 - `stgpt.foundation`: training, model architecture, checkpoint loading, embedding, and model packaging.
 - `stgpt.evidence`: QC, deterministic splits, evaluation, ablations, domain-shift checks, and failure analysis.
-- `stgpt.runtime`: tool API for downstream systems, starting with `embed_cells`, `evaluate_checkpoint`, `package_model`, and `export_spatho_artifacts`.
+- `stgpt.runtime`: schema-first tool API for downstream systems, starting with `validate_case`, `embed_regions`, `summarize_structures`, `evaluate_checkpoint`, `package_model`, and `export_spatho_artifacts`.
 - `spatho.workbench`: the agentic workflow layer that plans analysis, checks guardrails, calls tools, and organizes evidence.
 - `spatho.reports`: reproducible report assembly that distinguishes measured data from model-derived evidence.
+
+## Agentic Runtime Contract
+
+`stgpt.runtime` should be treated as a typed tool surface, not just a collection of CLI scripts. The implementation should remain callable from Python, mirrored by CLI commands, and later wrapped as MCP or agent tools only after the Python contract is stable.
+
+Recommended stable tool surface:
+
+- `validate_case`: validate one case, write QC reports, and return fatal errors, warnings, fingerprints, and split references.
+- `embed_regions`: embed contour or spatial-region units and write region-first artifacts.
+- `summarize_structures`: aggregate region evidence into structure-level summaries for workbench consumption.
+- `retrieve_regions`: find similar regions from a region, marker query, image crop, or embedding.
+- `compare_regions`: compare regions with molecular, morphology, spatial, and QC summaries.
+- `score_niche`: score configured niche signatures with measured and model-derived fields separated.
+- `explain_region`: produce an evidence-ID-linked explanation for one region without making clinical claims.
+- `export_spatho_artifacts`: write the spatho-compatible artifact package and remain the first stable handshake with `spatho`.
+
+Every runtime output should carry evidence IDs, input/config/checkpoint fingerprints, QC verdicts, warnings, and audit metadata. This lets `spatho` act as a planner, critic, reporter, and human-handoff layer instead of reading raw vectors directly.
+
+The downstream loop is:
+
+```text
+Plan -> Tool Calls -> QC/Critic -> Evidence Graph -> Report -> Human Review -> Model Improvement
+```
 
 ## Current Method Landscape
 
@@ -81,10 +110,14 @@ These methods may not all use H&E as a core modality, but they define the baseli
 ## Development Priorities
 
 - Build robust Xenium ingestion and validation first: coordinates, gene names, panel metadata, cell IDs, optional morphology assets, and reproducible AnnData export.
+- Make `XeniumSlide` the canonical real-data contract before model scaling: sparse cell-gene matrix, centroid/boundary geometry, panel metadata, aligned H&E transform metadata, contour polygons, cell-to-contour assignments, and batch/slide/patient/organ/stain/scanner metadata should travel together.
+- Use contour-segmented H&E crops as the first real image learning units for Atera Xenium, not per-cell crops. This keeps image context auditable and aligned with spatho-style structure evidence.
 - Treat `stgpt validate-data` as the first real-data gate: it should write a case manifest, QC reports, and deterministic splits before any paper-facing training run.
 - Treat `stgpt evaluate` as the second gate: it should consume the QC split file and write reconstruction, retrieval, and embedding-quality artifacts for every paper-facing checkpoint.
 - Package successful checkpoints as spatho-compatible model backends with `stgpt package-model`, `stgpt spatho-embed`, and the `stgpt.runtime` API, keeping the external `spatho` package optional.
+- Treat `stgpt.runtime.export_spatho_artifacts(config, checkpoint, output_dir, batch_size=32, device="auto")` as the first stable integration point for `spatho`.
 - Make patch and structure manifests reproducible: every embedding should be traceable to image coordinates, patch extraction parameters, registration metadata, and any spatho-derived structure labels.
+- Prefer region-first exports for workbench use: `region_embeddings.parquet`, `region_cell_membership.parquet`, `region_molecular_summary.parquet`, `region_image_manifest.json`, `region_qc_report.json`, and `evidence_manifest.json`.
 - Implement baseline comparisons against the closest method families: scGPT-spatial-style gene/spatial objectives, STPath/STORM-style masked expression prediction, ST-Align/OmiCLIP-style contrastive alignment, and xMINT-style Xenium imputation.
 - Treat objective ablations as required evidence: `stgpt train --ablation gene_only`, `image_only`, `spatial_only`, `image_gene`, `image_gene_spatial`, and `full` should be run from the same data split before making claims.
 - Add explicit handling for batch effects and domain shift: case-level splits, slide-level splits, organ/tissue holdouts, platform holdouts where possible, and staining variation checks.
@@ -108,6 +141,7 @@ These methods may not all use H&E as a core modality, but they define the baseli
 The next development phase should be considered successful when `stGPT` can:
 
 - load a real Xenium case through the optional adapter
+- build the Atera Breast and Cervical WTA cases into `XeniumSlide` stores before training
 - validate the case with `stgpt validate-data` and inspect the QC report before training
 - attach reproducible H&E patch and structure/context metadata
 - train the image-gene Transformer with reconstruction and contrastive objectives

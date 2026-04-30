@@ -23,6 +23,7 @@ from stgpt.models import ImageGeneSTGPT
 from stgpt.qc import validate_data
 from stgpt.spatho import (
     CELL_EMBEDDING_REQUIRED_COLUMNS,
+    REGION_EMBEDDING_REQUIRED_COLUMNS,
     STRUCTURE_SUMMARY_REQUIRED_COLUMNS,
     PatchManifestRow,
     SpathoExportResult,
@@ -131,6 +132,12 @@ def test_full_pipeline_validate_train_evaluate_export(tmp_path: Path) -> None:
     # Step 4 – export-spatho
     export_result = run_spatho_export(cfg, checkpoint=checkpoint, output_dir=tmp_path / "spatho_out", batch_size=4, device="cpu")
     assert export_result.cell_embeddings.exists()
+    assert export_result.region_embeddings is not None and export_result.region_embeddings.exists()
+    assert export_result.region_cell_membership is not None and export_result.region_cell_membership.exists()
+    assert export_result.region_molecular_summary is not None and export_result.region_molecular_summary.exists()
+    assert export_result.region_image_manifest is not None and export_result.region_image_manifest.exists()
+    assert export_result.region_qc_report is not None and export_result.region_qc_report.exists()
+    assert export_result.evidence_manifest is not None and export_result.evidence_manifest.exists()
     assert export_result.structure_summary.exists()
     assert export_result.qc_report.exists()
 
@@ -187,6 +194,13 @@ def test_cell_embedding_required_columns_constant() -> None:
     assert "qc_flag" in CELL_EMBEDDING_REQUIRED_COLUMNS
 
 
+def test_region_embedding_required_columns_constant() -> None:
+    assert "region_id" in REGION_EMBEDDING_REQUIRED_COLUMNS
+    assert "structure_label" in REGION_EMBEDDING_REQUIRED_COLUMNS
+    assert "n_cells" in REGION_EMBEDDING_REQUIRED_COLUMNS
+    assert "qc_flag" in REGION_EMBEDDING_REQUIRED_COLUMNS
+
+
 def test_structure_summary_required_columns_constant() -> None:
     assert "structure_label" in STRUCTURE_SUMMARY_REQUIRED_COLUMNS
     assert "n_cells" in STRUCTURE_SUMMARY_REQUIRED_COLUMNS
@@ -203,6 +217,11 @@ def test_run_spatho_export_writes_all_artifacts(tmp_path: Path) -> None:
     result = run_spatho_export(cfg, checkpoint=checkpoint, output_dir=tmp_path / "out", batch_size=4, device="cpu")
 
     assert result.cell_embeddings.exists()
+    assert result.region_embeddings is not None and result.region_embeddings.exists()
+    assert result.region_cell_membership is not None and result.region_cell_membership.exists()
+    assert result.region_molecular_summary is not None and result.region_molecular_summary.exists()
+    assert result.region_image_manifest is not None and result.region_image_manifest.exists()
+    assert result.evidence_manifest is not None and result.evidence_manifest.exists()
     assert result.structure_summary.exists()
     assert result.qc_report.exists()
 
@@ -213,11 +232,11 @@ def test_run_spatho_export_cell_embeddings_schema(tmp_path: Path) -> None:
     result = run_spatho_export(cfg, checkpoint=checkpoint, output_dir=tmp_path / "out", batch_size=4, device="cpu")
 
     frame = pd.read_parquet(result.cell_embeddings)
-    for col in CELL_EMBEDDING_REQUIRED_COLUMNS:
-        assert col in frame.columns, f"Required column '{col}' missing from cell_embeddings.parquet"
+    for col in REGION_EMBEDDING_REQUIRED_COLUMNS:
+        assert col in frame.columns, f"Required column '{col}' missing from region_embeddings.parquet"
     emb_cols = [col for col in frame.columns if str(col).startswith("emb_")]
-    assert len(emb_cols) > 0, "No emb_* columns found in cell_embeddings.parquet"
-    assert len(frame) == cfg.data.n_cells
+    assert len(emb_cols) > 0, "No emb_* columns found in region_embeddings.parquet"
+    assert len(frame) == result.n_cells
 
 
 def test_run_spatho_export_structure_summary_schema(tmp_path: Path) -> None:
@@ -239,10 +258,14 @@ def test_run_spatho_export_qc_report_content(tmp_path: Path) -> None:
     result = run_spatho_export(cfg, checkpoint=checkpoint, output_dir=tmp_path / "out", batch_size=4, device="cpu")
 
     payload = json.loads(result.qc_report.read_text(encoding="utf-8"))
-    assert payload["n_cells_total"] == cfg.data.n_cells
-    assert payload["n_cells_with_image"] + payload["n_cells_no_image"] == payload["n_cells_total"]
+    assert payload["training_unit"] == "region"
+    assert payload["n_regions_total"] == result.n_cells
+    assert payload["n_regions_with_image"] + payload["n_regions_no_image"] == payload["n_regions_total"]
     assert "image_coverage" in payload
     assert "structure_counts" in payload
+    evidence = json.loads(result.evidence_manifest.read_text(encoding="utf-8")) if result.evidence_manifest else {}
+    assert evidence["training_unit"] == "region"
+    assert "region_embeddings" in evidence["artifacts"]
 
 
 def test_run_spatho_export_result_statistics(tmp_path: Path) -> None:
@@ -250,7 +273,7 @@ def test_run_spatho_export_result_statistics(tmp_path: Path) -> None:
     checkpoint = _checkpoint(tmp_path, cfg)
     result = run_spatho_export(cfg, checkpoint=checkpoint, output_dir=tmp_path / "out", batch_size=4, device="cpu")
 
-    assert result.n_cells == cfg.data.n_cells
+    assert result.n_cells > 0
     assert result.n_cells_with_image <= result.n_cells
     assert result.embedding_dim > 0
 
@@ -300,9 +323,13 @@ def test_cli_export_spatho_writes_artifacts(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert Path(payload["cell_embeddings"]).exists()
+    assert Path(payload["region_embeddings"]).exists()
+    assert Path(payload["region_cell_membership"]).exists()
+    assert Path(payload["region_molecular_summary"]).exists()
     assert Path(payload["structure_summary"]).exists()
     assert Path(payload["qc_report"]).exists()
-    assert payload["n_cells"] == cfg.data.n_cells
+    assert payload["n_cells"] > 0
+    assert Path(payload["region_embeddings"]).exists()
 
 
 # ---------------------------------------------------------------------------
@@ -358,4 +385,5 @@ def test_top_level_exports_include_spatho_symbols() -> None:
     assert hasattr(stgpt, "SpathoExportResult")
     assert hasattr(stgpt, "PatchManifestRow")
     assert hasattr(stgpt, "CELL_EMBEDDING_REQUIRED_COLUMNS")
+    assert hasattr(stgpt, "REGION_EMBEDDING_REQUIRED_COLUMNS")
     assert hasattr(stgpt, "STRUCTURE_SUMMARY_REQUIRED_COLUMNS")

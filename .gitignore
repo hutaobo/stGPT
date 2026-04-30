@@ -10,6 +10,7 @@ __pycache__/
 .mypy_cache/
 .coverage
 htmlcov/
+docs/_build/
 build/
 dist/
 outputs/

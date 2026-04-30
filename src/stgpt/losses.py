@@ -14,11 +14,11 @@ def masked_mse(input: Tensor, target: Tensor, mask: Tensor) -> Tensor:
     return F.mse_loss(input[active], target[active])
 
 
-def image_gene_contrastive_loss(cell_emb: Tensor, image_emb: Tensor, temperature: float = 0.07) -> Tensor:
-    if cell_emb.shape[0] < 2:
-        return cell_emb.sum() * 0.0
-    logits = cell_emb @ image_emb.T / temperature
-    labels = torch.arange(cell_emb.shape[0], device=cell_emb.device)
+def image_gene_contrastive_loss(region_emb: Tensor, image_emb: Tensor, temperature: float = 0.07) -> Tensor:
+    if region_emb.shape[0] < 2:
+        return region_emb.sum() * 0.0
+    logits = region_emb @ image_emb.T / temperature
+    labels = torch.arange(region_emb.shape[0], device=region_emb.device)
     return 0.5 * (F.cross_entropy(logits, labels) + F.cross_entropy(logits.T, labels))
 
 
@@ -33,7 +33,7 @@ def compute_losses(
     mask = batch["mask"] & ~batch["gene_padding_mask"]
     gene = masked_mse(output.gene_pred, batch["target_values"], mask)
     neighbor = masked_mse(output.neighbor_pred, batch["neighbor_values"], ~batch["gene_padding_mask"])
-    contrastive = image_gene_contrastive_loss(output.cell_emb, output.image_emb)
+    contrastive = image_gene_contrastive_loss(output.region_emb, output.image_emb)
     if output.structure_logits is not None and "structure_labels" in batch:
         structure = F.cross_entropy(output.structure_logits, batch["structure_labels"].long())
     else:
