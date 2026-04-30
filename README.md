@@ -75,6 +75,8 @@ from stgpt.models import ImageGeneSTGPT
 from stgpt.training import train
 ```
 
+Development strategy: [`docs/strategy.md`](docs/strategy.md)
+
 ## Attribution
 
 This project is inspired by scGPT-spatial:
