@@ -13,9 +13,9 @@ from . import __version__
 from .config import StGPTConfig
 from .data import build_training_manifest
 from .evaluation import evaluate as evaluate_model
-from .inference import embed_anndata, export_spatho_summaries, write_embeddings_table
+from .inference import embed_anndata, write_embeddings_table
 from .qc import validate_data
-from .spatho import embed_spatho_case, package_model
+from .spatho import run_spatho_export
 from .training import train as train_model
 
 app = typer.Typer(help="stGPT image-gene spatial transcriptomics prototype.")
@@ -85,29 +85,6 @@ def evaluate(
     typer.echo(json.dumps(result, indent=2))
 
 
-@app.command("package-model")
-def package_model_command(
-    checkpoint: Annotated[Path, typer.Option("--checkpoint", "-k", exists=True)],
-    evaluation: Annotated[Path, typer.Option("--eval", exists=True)],
-    output: Annotated[Path, typer.Option("--output", "-o")],
-    model_name: Annotated[str | None, typer.Option("--model-name")] = None,
-) -> None:
-    result = package_model(checkpoint=checkpoint, evaluation=evaluation, output_dir=output, model_name=model_name)
-    typer.echo(json.dumps(result, indent=2))
-
-
-@app.command("spatho-embed")
-def spatho_embed_command(
-    model: Annotated[Path, typer.Option("--model", "-m", exists=True)],
-    config: Annotated[Path, typer.Option("--config", "-c", exists=True)],
-    output: Annotated[Path, typer.Option("--output", "-o")],
-    batch_size: Annotated[int, typer.Option("--batch-size")] = 32,
-    device: Annotated[str, typer.Option("--device")] = "auto",
-) -> None:
-    result = embed_spatho_case(config=config, checkpoint=model, output_dir=output, batch_size=batch_size, device=device)
-    typer.echo(json.dumps(result, indent=2))
-
-
 @app.command()
 def embed(
     checkpoint: Annotated[Path, typer.Option("--checkpoint", "-k", exists=True)],
@@ -124,8 +101,12 @@ def embed(
 
 @app.command("export-spatho")
 def export_spatho(
-    embeddings: Annotated[Path, typer.Option("--embeddings", "-e", exists=True)],
+    config: Annotated[Path, typer.Option("--config", "-c", exists=True)],
+    checkpoint: Annotated[Path, typer.Option("--checkpoint", "-k", exists=True)],
     output: Annotated[Path, typer.Option("--output", "-o")],
+    batch_size: Annotated[int, typer.Option("--batch-size")] = 32,
+    device: Annotated[str, typer.Option("--device")] = "auto",
 ) -> None:
-    outputs = export_spatho_summaries(embeddings, output)
-    typer.echo(json.dumps(outputs, indent=2))
+    cfg = StGPTConfig.from_file(config)
+    result = run_spatho_export(cfg, checkpoint=checkpoint, output_dir=output, batch_size=batch_size, device=device)
+    typer.echo(json.dumps(result.to_dict(), indent=2))

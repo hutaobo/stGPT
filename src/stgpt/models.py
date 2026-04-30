@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -103,6 +105,77 @@ class ImageGeneSTGPT(nn.Module):
         self.structure_head = nn.Linear(d_model, self.n_structures) if self.n_structures > 1 else None
         nn.init.normal_(self.cls_token, std=0.02)
 
+    @classmethod
+    def from_pretrained(
+        cls,
+        checkpoint: str | Path,
+        *,
+        device: str = "auto",
+    ) -> ImageGeneSTGPT:
+        """Load a pretrained model from a checkpoint produced by ``stgpt train``.
+
+        The model is loaded in evaluation mode on the requested device and is ready
+        for inference.  Vocabulary, model architecture, and structure count are all
+        recovered from the checkpoint so no additional config is required.
+
+        Args:
+            checkpoint: Path to a ``*.pt`` checkpoint file written by
+                :func:`stgpt.training.train`.
+            device: PyTorch device string: ``"auto"``, ``"cpu"``, or ``"cuda"``.
+                ``"auto"`` selects CUDA when available, otherwise CPU.
+
+        Returns:
+            :class:`ImageGeneSTGPT` in eval mode on the requested device.
+
+        Example::
+
+            from stgpt.models import ImageGeneSTGPT
+
+            model = ImageGeneSTGPT.from_pretrained("outputs/train/checkpoints/last.pt")
+            model.eval()
+        """
+        from .config import StGPTConfig  # local import keeps models.py self-contained
+
+        payload: dict[str, Any] = torch.load(checkpoint, map_location="cpu")
+        cfg = StGPTConfig.model_validate(payload["config"])
+        genes: list[str] = payload.get("vocab", {}).get("genes", [])
+        n_genes = len(genes) if genes else cfg.data.n_genes
+        n_structures = int(payload.get("n_structures", 1))
+
+        model = cls(
+            n_genes=n_genes,
+            n_structures=n_structures,
+            d_model=cfg.model.d_model,
+            n_heads=cfg.model.n_heads,
+            n_layers=cfg.model.n_layers,
+            dim_feedforward=cfg.model.dim_feedforward,
+            n_expression_bins=cfg.model.n_expression_bins,
+            image_channels=cfg.model.image_channels,
+            dropout=cfg.model.dropout,
+        )
+        model.load_state_dict(payload["model_state"], strict=False)
+        target = _resolve_device(device)
+        model.to(target)
+        model.eval()
+        return model
+
+    @staticmethod
+    def load_checkpoint(checkpoint: str | Path) -> dict[str, Any]:
+        """Load a raw checkpoint dict from disk.
+
+        Returns the full checkpoint payload (model state dict, config, vocab,
+        structure metadata, and training metrics) as a plain dictionary.  This is
+        intended for inspection and advanced usage; for standard inference use
+        :meth:`from_pretrained` instead.
+
+        Args:
+            checkpoint: Path to a ``*.pt`` checkpoint file.
+
+        Returns:
+            The raw ``dict`` payload stored in the checkpoint.
+        """
+        return dict(torch.load(checkpoint, map_location="cpu"))
+
     def forward(
         self,
         *,
@@ -157,3 +230,12 @@ class ImageGeneSTGPT(nn.Module):
             image_emb=F.normalize(image_emb, dim=1),
             structure_logits=structure_logits,
         )
+
+
+def _resolve_device(name: str) -> torch.device:
+    normalized = str(name).lower()
+    if normalized == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if normalized == "cuda" and not torch.cuda.is_available():
+        return torch.device("cpu")
+    return torch.device(normalized)

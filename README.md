@@ -33,6 +33,60 @@ When using the checked-out development environment on Windows, run tests through
 
 The system Python must have the editable package and dependencies installed before `python -m pytest` will work.
 
+## spatho Adapter
+
+`stGPT` is designed to serve as the morpho-molecular embedding backend for spatial pathology tools such as `spatho`.
+The stable entry point is `stgpt export-spatho`, which runs the full embed pipeline and writes three versioned artifacts:
+
+| Artifact | Contents |
+|---|---|
+| `cell_embeddings.parquet` | One row per cell: `cell_id`, `x`, `y`, `structure_label`, `qc_flag`, `emb_0` … `emb_{d-1}` |
+| `structure_summary.parquet` | One row per structure: `structure_label`, `n_cells`, mean `emb_*` |
+| `qc_report.json` | Operational QC: cell counts, image coverage, per-structure breakdown |
+
+```bash
+stgpt export-spatho \
+  --config  configs/atera_wta_breast.yaml \
+  --checkpoint outputs/atera_wta_breast/train/checkpoints/last.pt \
+  --output  outputs/atera_wta_breast/spatho_export
+```
+
+The same pipeline is available from Python:
+
+```python
+from stgpt.spatho import run_spatho_export
+
+result = run_spatho_export(
+    "configs/atera_wta_breast.yaml",
+    checkpoint="outputs/atera_wta_breast/train/checkpoints/last.pt",
+    output_dir="outputs/atera_wta_breast/spatho_export",
+)
+print(result.cell_embeddings)   # Path to cell_embeddings.parquet
+print(result.n_cells_with_image)
+```
+
+The `qc_flag` column in `cell_embeddings.parquet` records `"ok"` when an H&E patch was loaded from the patch manifest, and `"no_image"` when the model fell back to a zero image tensor.
+
+## Loading a Pretrained Model
+
+```python
+from stgpt.models import ImageGeneSTGPT
+
+model = ImageGeneSTGPT.from_pretrained(
+    "outputs/atera_wta_breast/train/checkpoints/last.pt",
+    device="auto",   # "auto" | "cpu" | "cuda"
+)
+# model is in eval mode on the requested device
+```
+
+To inspect the raw checkpoint payload (config, vocab, training metrics):
+
+```python
+payload = ImageGeneSTGPT.load_checkpoint("outputs/.../last.pt")
+print(payload["config"])
+print(payload["vocab"]["genes"][:10])
+```
+
 ## Data/QC Validation
 
 Before training on real data, validate the data contract and inspect the generated QC report:
@@ -124,7 +178,7 @@ from stgpt.data import build_training_manifest, load_xenium_case
 from stgpt.evaluation import evaluate
 from stgpt.inference import embed_anndata
 from stgpt.models import ImageGeneSTGPT
-from stgpt.spatho import SpathoStGPTModel, embed_spatho_case, package_model
+from stgpt.spatho import PatchManifestRow, SpathoExportResult, run_spatho_export
 from stgpt.training import train
 ```
 

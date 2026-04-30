@@ -6,7 +6,13 @@ from .evaluation import evaluate
 from .inference import embed_anndata
 from .models import ImageGeneSTGPT
 from .qc import validate_data, validate_training_case
-from .spatho import SpathoStGPTModel, embed_spatho_case, package_model, write_spatho_artifacts
+from .spatho import (
+    CELL_EMBEDDING_REQUIRED_COLUMNS,
+    STRUCTURE_SUMMARY_REQUIRED_COLUMNS,
+    PatchManifestRow,
+    SpathoExportResult,
+    run_spatho_export,
+)
 from .training import train
 
 __version__ = "0.1.0"
@@ -14,21 +20,23 @@ __version__ = "0.1.0"
 __all__ = [
     "__version__",
     "AblationMode",
+    "CELL_EMBEDDING_REQUIRED_COLUMNS",
     "DataConfig",
     "ImageGeneSTGPT",
     "ModelConfig",
-    "SpathoStGPTModel",
+    "PatchManifestRow",
     "SplitConfig",
+    "SpathoExportResult",
+    "STRUCTURE_SUMMARY_REQUIRED_COLUMNS",
     "StGPTConfig",
     "TrainingConfig",
     "build_training_manifest",
     "embed_anndata",
     "evaluate",
-    "embed_spatho_case",
     "load_xenium_case",
-    "package_model",
+    "run_spatho_export",
     "train",
     "validate_data",
     "validate_training_case",
-    "write_spatho_artifacts",
 ]
+
