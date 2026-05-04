@@ -35,11 +35,13 @@ dependencies = [
     "pillow>=10",
     "pyarrow>=14",
     "PyYAML>=6",
+    "zarr>=3,<4",
 ]
 
 [project.optional-dependencies]
 xenium = ["pyXenium>=0.4.1"]
 spatho = ["spatho>=0.1.0"]
+image = ["timm>=1.0", "transformers>=4.40"]
 dev = [
     "pytest>=8,<9",
     "ruff>=0.8",
@@ -55,6 +57,7 @@ Issues = "https://github.com/hutaobo/stGPT/issues"
 
 [project.scripts]
 stgpt = "stgpt.cli:app"
+stgpt-inspect = "stgpt.inspect_cli:app"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

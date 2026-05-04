@@ -39,6 +39,12 @@ For real Xenium adapters:
 python -m pip install -e ".[dev,xenium,spatho]"
 ```
 
+For frozen pathology/Hugging Face or timm image encoders:
+
+```bash
+python -m pip install -e ".[dev,image]"
+```
+
 When using the checked-out development environment on Windows, run tests through the project virtual environment:
 
 ```bash
@@ -135,6 +141,7 @@ stgpt evaluate --checkpoint outputs/atera_wta_breast/train/checkpoints/last.pt -
 ```
 
 This writes `evaluation_metrics.json`, `prediction_summary.csv`, `retrieval_metrics.csv`, `embedding_qc.csv`, `label_retrieval_metrics.csv`, `batch_mixing_metrics.csv`, and `failure_analysis.csv`.
+Image-facing runs also write `image_gene_retrieval_metrics.csv` and `image_ablation_metrics.csv` for paper figures.
 
 For multi-case development, use `data.mode: corpus` with `input_h5ad_list` or `dataset_roots`, then use `split.strategy: slide_holdout` to keep slide or patient groups from leaking across train, validation, and test splits.
 
@@ -154,6 +161,31 @@ stgpt spatho-embed --model outputs/atera_wta_breast/model --config configs/atera
 ```
 
 The spatho export writes `region_embeddings.parquet`, `region_cell_membership.parquet`, `region_molecular_summary.parquet`, `region_image_manifest.json`, `region_qc_report.json`, `evidence_manifest.json`, `structure_summary.parquet`, and `structure_embedding_summary.csv`.
+
+## H&E Evidence Workflow
+
+stGPT consumes contour H&E assets built by pyXenium/spatho. It can train with the default lightweight CNN, a frozen `timm`/Hugging Face pathology encoder, or a precomputed embedding store:
+
+```yaml
+model:
+  image_encoder_backend: cnn       # cnn | timm | hf | precomputed
+  image_encoder_name: null         # e.g. a timm or Hugging Face model id
+  image_encoder_frozen: true
+  image_embedding_dim: null
+data:
+  image_embedding_store: null
+  require_image_qc_pass: false
+  image_stain_normalization: none  # offline preprocessing flag
+```
+
+Recommended real-run flow:
+
+```bash
+stgpt inspect-images --config configs\l3_case.yaml --output outputs\l3_case\image_qc
+stgpt precompute-images --config configs\l3_case.yaml --encoder-backend hf --encoder <model-id> --output outputs\l3_case\image_embeddings.parquet --device cuda
+```
+
+Set `data.image_embedding_store` to the resulting parquet file before training to avoid repeated GPU image encoding. `inspect-images` writes `image_qc_summary.csv/json`; `precompute-images` writes `image_embeddings.parquet` and `image_embedding_manifest.csv`.
 
 ## Smoke Training
 
@@ -202,7 +234,7 @@ The public repo intentionally stores only templates. Real data, generated `.h5ad
 `ImageGeneSTGPT` combines:
 
 - gene tokens and expression-value/bin embeddings
-- a trainable lightweight, optionally multi-scale image patch encoder
+- a contour-aware H&E evidence encoder with CNN, frozen timm/Hugging Face, or precomputed embedding backends
 - region spatial coordinate and optional structure-context tokens
 - sampled member-cell expression tokens as region context
 - Transformer fusion over image, spatial, context, cell, and gene tokens

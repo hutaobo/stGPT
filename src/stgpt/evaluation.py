@@ -66,6 +66,11 @@ def evaluate(
                 gene_padding_mask=batch["gene_padding_mask"],
                 cell_expr_values=batch["cell_expr_values"],
                 cell_token_mask=batch["cell_token_mask"],
+                object_image=batch.get("object_image"),
+                context_image=batch.get("context_image"),
+                contour_mask=batch.get("contour_mask"),
+                contour_geometry=batch.get("contour_geometry"),
+                precomputed_image_embedding=batch.get("precomputed_image_embedding"),
             )
             _append_prediction_buffers(buffers, batch, output, batch_splits)
             embeddings.append(output.region_emb.cpu().numpy())
@@ -97,6 +102,8 @@ def evaluate(
     metrics_path = out / "evaluation_metrics.json"
     prediction_path = out / "prediction_summary.csv"
     retrieval_path = out / "retrieval_metrics.csv"
+    image_retrieval_path = out / "image_gene_retrieval_metrics.csv"
+    image_ablation_path = out / "image_ablation_metrics.csv"
     embedding_qc_path = out / "embedding_qc.csv"
     label_retrieval_path = out / "label_retrieval_metrics.csv"
     batch_mixing_path = out / "batch_mixing_metrics.csv"
@@ -104,6 +111,9 @@ def evaluate(
 
     prediction_summary.to_csv(prediction_path, index=False)
     retrieval_metrics.to_csv(retrieval_path, index=False)
+    retrieval_metrics.to_csv(image_retrieval_path, index=False)
+    image_ablation_metrics = _image_ablation_metrics(prediction_summary, retrieval_metrics, eval_cfg)
+    image_ablation_metrics.to_csv(image_ablation_path, index=False)
     embedding_qc.to_csv(embedding_qc_path, index=False)
     label_retrieval.to_csv(label_retrieval_path, index=False)
     batch_mixing.to_csv(batch_mixing_path, index=False)
@@ -112,6 +122,8 @@ def evaluate(
         "evaluation_metrics": str(metrics_path),
         "prediction_summary": str(prediction_path),
         "retrieval_metrics": str(retrieval_path),
+        "image_gene_retrieval_metrics": str(image_retrieval_path),
+        "image_ablation_metrics": str(image_ablation_path),
         "embedding_qc": str(embedding_qc_path),
         "label_retrieval_metrics": str(label_retrieval_path),
         "batch_mixing_metrics": str(batch_mixing_path),
@@ -142,6 +154,12 @@ def _load_model(checkpoint_payload: dict[str, Any], config: StGPTConfig, dataset
         n_expression_bins=config.model.n_expression_bins,
         image_channels=config.model.image_channels,
         patch_scales=config.model.patch_scales,
+        image_encoder_backend="precomputed" if config.data.image_embedding_store else config.model.image_encoder_backend,
+        image_encoder_name=config.model.image_encoder_name,
+        image_encoder_frozen=config.model.image_encoder_frozen,
+        image_embedding_dim=config.model.image_embedding_dim or dataset.image_embedding_dim or None,
+        n_prototypes=config.model.n_prototypes,
+        prototype_temperature=config.model.prototype_temperature,
         use_expression_values=config.model.use_expression_values,
         use_image_context=config.model.use_image_context,
         use_spatial_context=config.model.use_spatial_context,
@@ -321,6 +339,30 @@ def _batch_mixing_metrics(region_emb: np.ndarray, split_frame: pd.DataFrame, cas
     return pd.DataFrame(rows, columns=["split", "batch_column", "k", "effective_k", "n_regions", "batch_mixing_entropy"])
 
 
+def _image_ablation_metrics(prediction_summary: pd.DataFrame, retrieval_metrics: pd.DataFrame, config: StGPTConfig) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    prediction = prediction_summary[prediction_summary["split"] == "overall"]
+    retrieval = retrieval_metrics[(retrieval_metrics["split"] == "overall") & (retrieval_metrics["k"] == 1)]
+    pred_row = prediction.iloc[0] if not prediction.empty else pd.Series(dtype=object)
+    retrieval_row = retrieval.iloc[0] if not retrieval.empty else pd.Series(dtype=object)
+    rows.append(
+        {
+            "case_name": config.case_name,
+            "ablation_mode": config.training.ablation_mode or "full",
+            "image_encoder_backend": "precomputed" if config.data.image_embedding_store else config.model.image_encoder_backend,
+            "image_encoder_name": config.model.image_encoder_name,
+            "uses_precomputed_image_embeddings": bool(config.data.image_embedding_store),
+            "gene_mse": _float_or_nan(pred_row.get("gene_mse")),
+            "gene_correlation": _float_or_nan(pred_row.get("gene_correlation")),
+            "neighbor_mse": _float_or_nan(pred_row.get("neighbor_mse")),
+            "neighbor_correlation": _float_or_nan(pred_row.get("neighbor_correlation")),
+            "image_to_gene_top1": _float_or_nan(retrieval_row.get("image_to_gene_topk")),
+            "gene_to_image_top1": _float_or_nan(retrieval_row.get("gene_to_image_topk")),
+        }
+    )
+    return pd.DataFrame(rows)
+
+
 def _metrics_payload(
     prediction_summary: pd.DataFrame,
     retrieval_metrics: pd.DataFrame,
@@ -356,6 +398,10 @@ def _metrics_payload(
             "use_structure_context": bool(config.model.use_structure_context and config.data.include_structure_context),
             "use_cell_context": bool(config.model.use_cell_context),
             "patch_scales": list(config.model.patch_scales),
+            "image_encoder_backend": "precomputed" if config.data.image_embedding_store else config.model.image_encoder_backend,
+            "image_encoder_name": config.model.image_encoder_name,
+            "image_encoder_frozen": bool(config.model.image_encoder_frozen),
+            "image_embedding_dim": config.model.image_embedding_dim,
             "max_cells_per_region": int(config.model.max_cells_per_region),
         },
         "overall_prediction": overall_prediction[0] if overall_prediction else {},
@@ -530,6 +576,13 @@ def _correlation(pred: np.ndarray, target: np.ndarray) -> float:
     if pred.size < 2 or float(np.std(pred)) <= 1e-12 or float(np.std(target)) <= 1e-12:
         return float("nan")
     return float(np.corrcoef(pred, target)[0, 1])
+
+
+def _float_or_nan(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("nan")
 
 
 def _cell_ids(case) -> list[str]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -9,11 +10,22 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
+import zarr
 from scipy import sparse
 from sklearn.neighbors import NearestNeighbors
 from torch.utils.data import Dataset
 
 from .config import DataConfig, StGPTConfig
+from .contour_store import (
+    CONTEXT_RGB_KEY,
+    GEOMETRY_KEY,
+    OBJECT_RGB_KEY,
+    SOFT_MASK_KEY,
+    read_contour_manifest,
+    validate_contour_image_store,
+    validate_contour_manifest,
+)
 from .images import load_image_tensor, write_synthetic_patch
 from .tokenization import ExpressionBinner, GeneVocab
 
@@ -213,6 +225,188 @@ def load_patch_table(config: DataConfig) -> pd.DataFrame:
     return pd.DataFrame(normalized)
 
 
+def _load_image_embedding_table(config: DataConfig) -> pd.DataFrame:
+    path = config.path_or_none(config.image_embedding_store)
+    if path is None:
+        return pd.DataFrame()
+    if not path.exists():
+        raise FileNotFoundError(f"data.image_embedding_store does not exist: {path}")
+    if path.is_dir():
+        path = path / "image_embeddings.parquet"
+        if not path.exists():
+            raise FileNotFoundError(f"data.image_embedding_store directory is missing image_embeddings.parquet: {path}")
+    suffix = path.suffix.lower()
+    if suffix == ".parquet":
+        return pd.read_parquet(path)
+    if suffix == ".csv":
+        return pd.read_csv(path)
+    if suffix == ".json":
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        rows = payload if isinstance(payload, list) else payload.get("records", payload.get("embeddings", []))
+        return pd.DataFrame(rows)
+    raise ValueError(f"Unsupported image embedding store format: {path}")
+
+
+def _embedding_columns(frame: pd.DataFrame) -> list[str]:
+    if frame.empty:
+        return []
+    prefixed = [col for col in frame.columns if str(col).startswith("emb_")]
+    if prefixed:
+        return sorted(prefixed, key=_embedding_column_sort_key)
+    numeric = [col for col in frame.columns if str(col).isdigit()]
+    if numeric:
+        return sorted(numeric, key=lambda item: int(str(item)))
+    return []
+
+
+def _embedding_column_sort_key(column: str) -> tuple[int, str]:
+    suffix = str(column).removeprefix("emb_")
+    return (int(suffix), "") if suffix.isdigit() else (10**9, str(column))
+
+
+def _image_embeddings_by_region(frame: pd.DataFrame, embedding_columns: list[str]) -> dict[str, np.ndarray]:
+    if frame.empty or not embedding_columns:
+        return {}
+    id_column = next((col for col in ("region_id", "contour_id", "cell_id") if col in frame.columns), None)
+    if id_column is None:
+        raise ValueError("image embedding store must contain one of: region_id, contour_id, cell_id")
+    out: dict[str, np.ndarray] = {}
+    for _, row in frame.drop_duplicates(id_column, keep="last").iterrows():
+        value = row.get(id_column)
+        if pd.isna(value):
+            continue
+        out[str(value)] = row[embedding_columns].to_numpy(dtype=np.float32)
+    return out
+
+
+def _merge_contour_manifest(region_table: pd.DataFrame, config: DataConfig) -> pd.DataFrame:
+    manifest_path = config.path_or_none(config.contour_manifest)
+    if manifest_path is None:
+        return region_table
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"data.contour_manifest does not exist: {manifest_path}")
+    table = read_contour_manifest(manifest_path)
+    validate_contour_manifest(table)
+    manifest = pd.DataFrame(table.to_pydict())
+    if manifest.empty:
+        return region_table
+    if "contour_id" not in manifest.columns:
+        raise ValueError("contour manifest must contain contour_id")
+
+    store_path = config.path_or_none(config.contour_image_store)
+    if store_path is not None:
+        if not store_path.exists():
+            raise FileNotFoundError(f"data.contour_image_store does not exist: {store_path}")
+        validate_contour_image_store(store_path)
+        manifest["image_store"] = str(store_path)
+
+    keep_columns = [
+        "contour_id",
+        "row_index",
+        "spatial_sort_key",
+        "chunk_id",
+        "neighbor_row_indices",
+        "neighbor_distances",
+        "neighbor_offsets_xy",
+        "neighbor_valid_mask",
+        "area",
+        "perimeter",
+        "eccentricity",
+        "transform_fingerprint",
+        "image_store",
+    ]
+    frame = manifest[[col for col in keep_columns if col in manifest.columns]].copy()
+    for col in list(frame.columns):
+        if col == "contour_id":
+            continue
+        if col in region_table.columns and col not in {"row_index", "image_store"}:
+            frame = frame.rename(columns={col: f"manifest_{col}"})
+    merged = region_table.merge(frame, on="contour_id", how="left", sort=False)
+    if "row_index" in merged.columns and "image_store" in merged.columns:
+        has_packed_image = merged["row_index"].notna() & merged["image_store"].notna()
+        if "qc_flag" in merged.columns:
+            merged.loc[has_packed_image & (merged["qc_flag"].astype(str) == "no_image"), "qc_flag"] = "ok"
+    return merged
+
+
+def _merge_legacy_qc_flags(region_table: pd.DataFrame, config: DataConfig) -> pd.DataFrame:
+    table, source = _load_legacy_qc_table(config)
+    if table is None or table.empty:
+        return region_table
+    id_col = next((col for col in ("contour_id", "region_id", "structure_id") if col in table.columns), None)
+    flag_col = next((col for col in ("qc_flag", "qc_status", "status", "mask_quality", "mask_qc", "verdict") if col in table.columns), None)
+    if id_col is None or flag_col is None:
+        return region_table
+    mapped = table[[id_col, flag_col]].dropna(subset=[id_col]).drop_duplicates(subset=[id_col], keep="last").copy()
+    mapped[id_col] = mapped[id_col].astype(str)
+    mapped["legacy_qc_flag"] = mapped[flag_col].map(_normalize_legacy_qc_flag)
+    left_col = id_col if id_col in region_table.columns else "contour_id"
+    left = region_table.copy()
+    left["__legacy_qc_key"] = left[left_col].astype(str)
+    mapped = mapped.rename(columns={id_col: "__legacy_qc_key"})
+    merged = left.merge(
+        mapped[["__legacy_qc_key", "legacy_qc_flag"]],
+        on="__legacy_qc_key",
+        how="left",
+        sort=False,
+    ).drop(columns=["__legacy_qc_key"], errors="ignore")
+    merged["legacy_qc_source"] = str(source)
+    bad = merged["legacy_qc_flag"].notna() & (merged["legacy_qc_flag"] != "ok")
+    if "qc_flag" not in merged.columns:
+        merged["qc_flag"] = "ok"
+    merged.loc[bad, "qc_flag"] = merged.loc[bad, "legacy_qc_flag"]
+    return merged
+
+
+def _load_legacy_qc_table(config: DataConfig) -> tuple[pd.DataFrame | None, Path | None]:
+    for root in _case_root_candidates(config):
+        qc_dir = root / "stgpt_qc_codex"
+        if not qc_dir.exists():
+            continue
+        for stem in ("mask_quality_report", "contour_qc", "region_qc", "qc_flags"):
+            for suffix in (".parquet", ".csv", ".json"):
+                path = qc_dir / f"{stem}{suffix}"
+                if path.exists():
+                    return _read_legacy_qc_table(path), path
+    return None, None
+
+
+def _case_root_candidates(config: DataConfig) -> list[Path]:
+    roots: list[Path] = []
+    for value in (config.slide_store, config.dataset_root, config.patch_manifest, config.contour_manifest):
+        path = config.path_or_none(value)
+        if path is None:
+            continue
+        roots.append(path if path.is_dir() and path.name != "xenium_slide.zarr" else path.parent)
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for root in roots:
+        key = str(root)
+        if key not in seen:
+            seen.add(key)
+            unique.append(root)
+    return unique
+
+
+def _read_legacy_qc_table(path: Path) -> pd.DataFrame:
+    if path.suffix.lower() == ".parquet":
+        return pd.read_parquet(path)
+    if path.suffix.lower() == ".csv":
+        return pd.read_csv(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    rows = payload if isinstance(payload, list) else payload.get("records", payload.get("regions", payload.get("contours", [])))
+    return pd.DataFrame(rows)
+
+
+def _normalize_legacy_qc_flag(value: Any) -> str:
+    text = str(value).strip().lower()
+    if text in {"", "nan", "none"}:
+        return "legacy_qc_unknown"
+    if text in {"ok", "pass", "passed", "valid", "good", "true", "1"}:
+        return "ok"
+    return "legacy_qc_fail"
+
+
 def _coerce_data_config(config: StGPTConfig | DataConfig | str | Path) -> DataConfig:
     if isinstance(config, DataConfig):
         return config
@@ -236,7 +430,18 @@ def _load_xenium_slide(config: DataConfig) -> ad.AnnData:
     try:
         from pyXenium.io import read_xenium_slide
     except Exception as exc:  # pragma: no cover - optional dependency
-        raise RuntimeError("Install pyXenium to load data.mode='xenium_slide'.") from exc
+        cells_table = slide_store / "tables" / "cells"
+        if not cells_table.exists():
+            raise RuntimeError("Install pyXenium to load data.mode='xenium_slide'.") from exc
+        adata = ad.read_zarr(cells_table)
+        adata.uns.setdefault("xenium_slide", {}).update(
+            {
+                "slide_store": str(slide_store),
+                "metadata": {},
+                "component_summary": {"tables": ["cells"], "loader": "anndata.read_zarr"},
+            }
+        )
+        return adata
     slide = read_xenium_slide(slide_store)
     adata = slide.table.copy()
     adata.uns.setdefault("xenium_slide", {}).update(
@@ -469,6 +674,8 @@ def _build_region_training_case(
     )
     if not region_table.empty:
         region_table["region_id"] = pd.Categorical(region_table["region_id"], categories=region_ids, ordered=True).astype(str)
+        region_table = _merge_contour_manifest(region_table, config.data)
+        region_table = _merge_legacy_qc_flags(region_table, config.data)
     return TrainingCase(
         adata=adata,
         patch_table=patch_table,
@@ -563,6 +770,14 @@ class RegionDataset(Dataset[dict[str, Any]]):
         self.cell_indices_by_region = self._cell_indices_by_region()
         self.binner = ExpressionBinner(config.model.n_expression_bins)
         self.rng = np.random.default_rng(config.training.seed)
+        self._contour_store_cache: dict[str, tuple[int, zarr.Group]] = {}
+        self.image_embedding_table = _load_image_embedding_table(config.data)
+        self.image_embedding_columns = _embedding_columns(self.image_embedding_table)
+        self.image_embeddings_by_region = _image_embeddings_by_region(
+            self.image_embedding_table,
+            self.image_embedding_columns,
+        )
+        self.image_embedding_dim = len(self.image_embedding_columns)
 
     @property
     def n_structures(self) -> int:
@@ -575,10 +790,18 @@ class RegionDataset(Dataset[dict[str, Any]]):
     def __len__(self) -> int:
         return int(len(self.region_table))
 
+    def __getstate__(self) -> dict[str, Any]:
+        state = dict(self.__dict__)
+        state["_contour_store_cache"] = {}
+        return state
+
     def __getitem__(self, index: int) -> dict[str, Any]:
         row = self.region_table.iloc[index]
         region_id = str(row["region_id"])
         structure_label = int(self.structure_labels[index])
+        image_evidence = self._load_contour_image_evidence(row)
+        image_evidence["precomputed_embedding"] = self._precomputed_embedding(region_id)
+        image_evidence["has_precomputed_embedding"] = region_id in self.image_embeddings_by_region
         return {
             "index": index,
             "region_id": region_id,
@@ -589,6 +812,12 @@ class RegionDataset(Dataset[dict[str, Any]]):
             "structure_label": structure_label,
             "context_id": structure_label + 1 if self.config.data.include_structure_context else 0,
             "image_path": row.get("image_path"),
+            "image_evidence": image_evidence,
+            "row_index": _optional_int(row.get("row_index")),
+            "neighbor_row_indices": _fixed_int_array(row.get("neighbor_row_indices")),
+            "neighbor_distances": _fixed_float_array(row.get("neighbor_distances")),
+            "neighbor_offsets_xy": _fixed_float_array(row.get("neighbor_offsets_xy")),
+            "neighbor_valid_mask": _fixed_bool_array(row.get("neighbor_valid_mask")),
             "n_cells": int(row.get("n_cells", 0)),
         }
 
@@ -606,12 +835,23 @@ class RegionDataset(Dataset[dict[str, Any]]):
         mask = np.zeros((batch_size, max_genes), dtype=bool)
         padding = np.ones((batch_size, max_genes), dtype=bool)
         images = []
+        context_images = []
+        contour_masks = []
+        contour_geometries = []
+        precomputed_image_embeddings = []
+        has_precomputed_image_embeddings = []
+        image_sources = []
         spatial = []
         structure_labels = []
         context_ids = []
         region_indices = []
+        row_indices = []
         region_ids: list[str] = []
         n_cells = []
+        neighbor_row_arrays = []
+        neighbor_distance_arrays = []
+        neighbor_offset_arrays = []
+        neighbor_mask_arrays = []
         for row_idx, item in enumerate(items):
             expr = np.log1p(np.maximum(item["expression"], 0.0)).astype(np.float32)
             neigh = np.log1p(np.maximum(item["neighbor_expression"], 0.0)).astype(np.float32)
@@ -632,22 +872,42 @@ class RegionDataset(Dataset[dict[str, Any]]):
                 cell_expr = np.log1p(np.maximum(self._dense_row(self.cell_matrix, int(cell_index)), 0.0)).astype(np.float32)
                 cell_expr_values[row_idx, cell_pos, :n] = cell_expr[positions]
                 cell_token_mask[row_idx, cell_pos] = False
-            images.append(
-                load_image_tensor(
-                    item.get("image_path"),
-                    image_size=self.config.model.image_size,
-                    channels=self.config.model.image_channels,
-                )
-            )
+            evidence = item["image_evidence"]
+            images.append(evidence["object_image"])
+            context_images.append(evidence["context_image"])
+            contour_masks.append(evidence["mask"])
+            contour_geometries.append(evidence["geometry"])
+            precomputed_image_embeddings.append(evidence["precomputed_embedding"])
+            has_precomputed_image_embeddings.append(bool(evidence["has_precomputed_embedding"]))
+            image_sources.append(int(evidence["source_id"]))
             spatial.append(item["spatial"])
             structure_labels.append(item["structure_label"])
             context_ids.append(item["context_id"])
             region_indices.append(item["index"])
+            row_indices.append(-1 if item["row_index"] is None else int(item["row_index"]))
             region_ids.append(item["region_id"])
             n_cells.append(item["n_cells"])
+            neighbor_row_arrays.append(item["neighbor_row_indices"])
+            neighbor_distance_arrays.append(item["neighbor_distances"])
+            neighbor_offset_arrays.append(item["neighbor_offsets_xy"])
+            neighbor_mask_arrays.append(item["neighbor_valid_mask"])
+        neighbor_rows, neighbor_distances, neighbor_offsets, neighbor_valid = _collate_neighbor_metadata(
+            neighbor_row_arrays,
+            neighbor_distance_arrays,
+            neighbor_offset_arrays,
+            neighbor_mask_arrays,
+        )
+        geometry = _stack_geometry(contour_geometries)
+        image_embedding_dim = max([int(item.size) for item in precomputed_image_embeddings] + [0])
+        image_embeddings = np.zeros((batch_size, image_embedding_dim), dtype=np.float32)
+        if image_embedding_dim:
+            for idx, embedding in enumerate(precomputed_image_embeddings):
+                n = min(image_embedding_dim, int(embedding.size))
+                image_embeddings[idx, :n] = embedding[:n]
         return {
             "region_ids": region_ids,
             "region_indices": torch.tensor(region_indices, dtype=torch.long),
+            "row_index": torch.tensor(row_indices, dtype=torch.long),
             "n_cells": torch.tensor(n_cells, dtype=torch.long),
             "gene_ids": torch.from_numpy(gene_ids),
             "expr_values": torch.from_numpy(expr_values),
@@ -659,10 +919,100 @@ class RegionDataset(Dataset[dict[str, Any]]):
             "mask": torch.from_numpy(mask),
             "gene_padding_mask": torch.from_numpy(padding),
             "image": torch.stack(images, dim=0),
+            "object_image": torch.stack(images, dim=0),
+            "context_image": torch.stack(context_images, dim=0),
+            "contour_mask": torch.stack(contour_masks, dim=0),
+            "contour_geometry": geometry,
+            "precomputed_image_embedding": torch.from_numpy(image_embeddings),
+            "has_precomputed_image_embedding": torch.tensor(has_precomputed_image_embeddings, dtype=torch.bool),
+            "image_source": torch.tensor(image_sources, dtype=torch.long),
+            "neighbor_row_indices": neighbor_rows,
+            "neighbor_distances": neighbor_distances,
+            "neighbor_offsets_xy": neighbor_offsets,
+            "neighbor_valid_mask": neighbor_valid,
             "spatial": torch.from_numpy(np.asarray(spatial, dtype=np.float32)),
             "structure_labels": torch.tensor(structure_labels, dtype=torch.long),
             "context_ids": torch.tensor(context_ids, dtype=torch.long),
         }
+
+    def _load_contour_image_evidence(self, row: pd.Series) -> dict[str, Any]:
+        row_index = _optional_int(row.get("row_index"))
+        store_path = _row_string(row.get("image_store"))
+        if store_path is None and row_index is not None:
+            configured = self.config.data.path_or_none(self.config.data.contour_image_store)
+            store_path = str(configured) if configured is not None else None
+        if store_path is not None and row_index is not None:
+            root = self._open_contour_store(store_path)
+            object_key = self.config.data.object_rgb_key or OBJECT_RGB_KEY
+            context_key = self.config.data.context_rgb_key or CONTEXT_RGB_KEY
+            mask_key = self.config.data.mask_key or SOFT_MASK_KEY
+            geometry_key = self.config.data.geometry_key or GEOMETRY_KEY
+            object_image = _rgb_array_to_tensor(
+                np.asarray(root[object_key][row_index]),
+                image_size=self.config.model.image_size,
+                channels=self.config.model.image_channels,
+            )
+            context_image = (
+                _rgb_array_to_tensor(
+                    np.asarray(root[context_key][row_index]),
+                    image_size=self.config.model.image_size,
+                    channels=self.config.model.image_channels,
+                )
+                if context_key in root
+                else object_image.clone()
+            )
+            mask = (
+                _mask_array_to_tensor(np.asarray(root[mask_key][row_index]), image_size=self.config.model.image_size)
+                if mask_key in root
+                else torch.ones(1, self.config.model.image_size, self.config.model.image_size, dtype=torch.float32)
+            )
+            geometry = (
+                torch.from_numpy(np.asarray(root[geometry_key][row_index], dtype=np.float32)).flatten()
+                if geometry_key in root
+                else torch.zeros(0, dtype=torch.float32)
+            )
+            return {
+                "object_image": object_image,
+                "context_image": context_image,
+                "mask": mask,
+                "geometry": geometry,
+                "source": "contour_store",
+                "source_id": 2,
+            }
+
+        image_path = row.get("image_path")
+        object_image = load_image_tensor(
+            image_path,
+            image_size=self.config.model.image_size,
+            channels=self.config.model.image_channels,
+        )
+        path = Path(str(image_path)) if _row_string(image_path) is not None else None
+        has_image = bool(path is not None and path.exists())
+        mask_value = 1.0 if has_image else 0.0
+        return {
+            "object_image": object_image,
+            "context_image": object_image.clone(),
+            "mask": torch.full((1, self.config.model.image_size, self.config.model.image_size), mask_value, dtype=torch.float32),
+            "geometry": torch.zeros(0, dtype=torch.float32),
+            "source": "image_path" if has_image else "zero_fallback",
+            "source_id": 1 if has_image else 0,
+        }
+
+    def _precomputed_embedding(self, region_id: str) -> np.ndarray:
+        embedding = self.image_embeddings_by_region.get(str(region_id))
+        if embedding is None:
+            return np.zeros(self.image_embedding_dim, dtype=np.float32)
+        return embedding
+
+    def _open_contour_store(self, store_path: str | Path) -> zarr.Group:
+        key = str(Path(store_path).expanduser())
+        pid = os.getpid()
+        cached = self._contour_store_cache.get(key)
+        if cached is not None and cached[0] == pid:
+            return cached[1]
+        root = zarr.open_group(key, mode="r")
+        self._contour_store_cache[key] = (pid, root)
+        return root
 
     def _select_gene_positions(self, expr: np.ndarray, *, max_genes: int) -> np.ndarray:
         nonzero = np.flatnonzero(expr > 0)
@@ -723,6 +1073,131 @@ class RegionDataset(Dataset[dict[str, Any]]):
     def _dense_row(matrix, index: int) -> np.ndarray:
         row = matrix[index]
         return np.asarray(row.toarray()).ravel().astype(np.float32) if sparse.issparse(row) else np.asarray(row).ravel().astype(np.float32)
+
+
+def _row_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, float) and np.isnan(value):
+        return None
+    text = str(value)
+    if text in {"", "nan", "None"}:
+        return None
+    return text
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, float) and np.isnan(value):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fixed_int_array(value: Any) -> np.ndarray:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return np.zeros(0, dtype=np.int64)
+    return np.asarray(list(value), dtype=np.int64)
+
+
+def _fixed_float_array(value: Any) -> np.ndarray:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return np.zeros(0, dtype=np.float32)
+    return np.asarray(list(value), dtype=np.float32)
+
+
+def _fixed_bool_array(value: Any) -> np.ndarray:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return np.zeros(0, dtype=bool)
+    return np.asarray(list(value), dtype=bool)
+
+
+def _rgb_array_to_tensor(array: np.ndarray, *, image_size: int, channels: int) -> torch.Tensor:
+    values = np.asarray(array)
+    if values.ndim == 2:
+        values = values[:, :, None]
+    if values.ndim != 3:
+        raise ValueError(f"RGB contour image arrays must have shape [H, W, C], got {values.shape}")
+    tensor = torch.from_numpy(values.astype(np.float32, copy=False))
+    if float(tensor.max()) > 1.0:
+        tensor = tensor / 255.0
+    tensor = tensor.permute(2, 0, 1).contiguous()
+    if tensor.shape[0] == 1 and channels >= 3:
+        tensor = tensor.repeat(3, 1, 1)
+    if channels == 1:
+        tensor = tensor.mean(dim=0, keepdim=True)
+    elif channels > tensor.shape[0]:
+        pad = torch.zeros(channels - tensor.shape[0], tensor.shape[1], tensor.shape[2], dtype=torch.float32)
+        tensor = torch.cat([tensor, pad], dim=0)
+    tensor = tensor[:channels]
+    if tuple(tensor.shape[-2:]) != (image_size, image_size):
+        tensor = F.interpolate(tensor.unsqueeze(0), size=(image_size, image_size), mode="bilinear", align_corners=False).squeeze(0)
+    return tensor.contiguous()
+
+
+def _mask_array_to_tensor(array: np.ndarray, *, image_size: int) -> torch.Tensor:
+    values = np.asarray(array)
+    if values.ndim == 3:
+        values = values[:, :, 0]
+    if values.ndim != 2:
+        raise ValueError(f"Contour mask arrays must have shape [H, W] or [H, W, 1], got {values.shape}")
+    tensor = torch.from_numpy(values.astype(np.float32, copy=False))
+    if float(tensor.max()) > 1.0:
+        tensor = tensor / 255.0
+    tensor = tensor.unsqueeze(0).contiguous()
+    if tuple(tensor.shape[-2:]) != (image_size, image_size):
+        tensor = F.interpolate(tensor.unsqueeze(0), size=(image_size, image_size), mode="nearest").squeeze(0)
+    return tensor.contiguous()
+
+
+def _collate_neighbor_metadata(
+    row_arrays: list[np.ndarray],
+    distance_arrays: list[np.ndarray],
+    offset_arrays: list[np.ndarray],
+    mask_arrays: list[np.ndarray],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    batch_size = len(row_arrays)
+    max_neighbors = max([len(item) for item in row_arrays] + [0])
+    if max_neighbors == 0:
+        return (
+            torch.empty(batch_size, 0, dtype=torch.long),
+            torch.empty(batch_size, 0, dtype=torch.float32),
+            torch.empty(batch_size, 0, 2, dtype=torch.float32),
+            torch.empty(batch_size, 0, dtype=torch.bool),
+        )
+    rows = np.full((batch_size, max_neighbors), -1, dtype=np.int64)
+    distances = np.zeros((batch_size, max_neighbors), dtype=np.float32)
+    offsets = np.zeros((batch_size, max_neighbors, 2), dtype=np.float32)
+    valid = np.zeros((batch_size, max_neighbors), dtype=bool)
+    for idx, (row, distance, offset, mask) in enumerate(zip(row_arrays, distance_arrays, offset_arrays, mask_arrays, strict=True)):
+        n = min(max_neighbors, len(row))
+        rows[idx, :n] = row[:n]
+        distances[idx, : min(n, len(distance))] = distance[: min(n, len(distance))]
+        valid[idx, : min(n, len(mask))] = mask[: min(n, len(mask))]
+        flat = offset[: min(len(offset), n * 2)]
+        if flat.size:
+            offsets[idx, : flat.size // 2, :] = flat[: (flat.size // 2) * 2].reshape(-1, 2)
+    return (
+        torch.from_numpy(rows),
+        torch.from_numpy(distances),
+        torch.from_numpy(offsets),
+        torch.from_numpy(valid),
+    )
+
+
+def _stack_geometry(geometries: list[torch.Tensor]) -> torch.Tensor:
+    batch_size = len(geometries)
+    width = max([int(item.numel()) for item in geometries] + [0])
+    if width == 0:
+        return torch.empty(batch_size, 0, dtype=torch.float32)
+    out = torch.zeros(batch_size, width, dtype=torch.float32)
+    for idx, geometry in enumerate(geometries):
+        flat = geometry.flatten().float()
+        out[idx, : flat.numel()] = flat
+    return out
 
 
 # Compatibility name used by training/evaluation code paths.

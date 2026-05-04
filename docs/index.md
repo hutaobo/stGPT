@@ -40,6 +40,13 @@ Track the foundation-model, schema-first runtime, evidence graph, and reproducib
 Plan the contour- and region-level foundation-model target and spatho downstream artifact contract.
 :::
 
+:::{grid-item-card} RFC 0001
+:link: rfcs/0001-contour-native-evidence-foundation-model
+:link-type: doc
+
+Freeze the contour-native evidence foundation-model design, including packed contour stores, fixed neighbor manifests, mid-fusion, prototype banks, and human feedback.
+:::
+
 ::::
 
 ```{toctree}
@@ -58,4 +65,5 @@ tutorials/atera_xeniumslide_data_foundation
 strategy
 foundation_model_requirements
 contour_region_foundation_model
+rfcs/0001-contour-native-evidence-foundation-model
 ```

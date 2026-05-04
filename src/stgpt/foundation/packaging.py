@@ -104,6 +104,7 @@ def _model_metadata(
         "panel_metadata": payload.get("panel_metadata", {}),
         "split_summary": payload.get("split_summary", {}),
         "training_provenance": training_provenance,
+        "image_encoder": payload.get("image_encoder", {}),
         "structure_names": payload.get("structure_names", []),
         "training_summary": payload.get("training_summary", {}),
         "intended_use": (
@@ -136,6 +137,7 @@ This packaged stGPT checkpoint is a Xenium-first morpho-molecular foundation-mod
 - Training unit: {metadata.get("training_unit")}
 - Regions: {metadata.get("n_regions")}
 - Model version: {metadata.get("model_version")}
+- Image encoder: {metadata.get("image_encoder", {}).get("backend")} ({metadata.get("image_encoder", {}).get("name")})
 
 ## Training Provenance
 

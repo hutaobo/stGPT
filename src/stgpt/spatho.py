@@ -10,6 +10,8 @@ directory, and writes region-first evidence artifacts:
 * ``region_cell_membership.parquet`` – contour/region-to-cell membership table.
 * ``region_molecular_summary.parquet`` – raw mean expression per contour/region.
 * ``region_image_manifest.json`` – image patch and registration provenance.
+* ``prototype_assignments.parquet`` – model-derived prototype IDs and confidence.
+* ``contour_evidence_chains.jsonl`` – one pointer-only evidence chain per region.
 * ``region_qc_report.json`` – operational QC summary for the export run.
 * ``structure_summary.parquet`` – one row per structure with cell count and mean
   embedding vector.
@@ -20,6 +22,7 @@ additional ``emb_*`` columns carry the actual embedding dimensions.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -29,9 +32,8 @@ import numpy as np
 import pandas as pd
 
 from .config import StGPTConfig
-from .data import build_training_case
 from .foundation.packaging import resolve_model_checkpoint
-from .inference import embed_regions
+from .inference import embed_region_outputs
 
 #: Deprecated compatibility schema for the old cell-first export contract.
 CELL_EMBEDDING_REQUIRED_COLUMNS: tuple[str, ...] = ("cell_id", "x", "y", "structure_label", "qc_flag")
@@ -100,6 +102,8 @@ class SpathoExportResult:
     region_image_manifest: Path | None = None
     region_qc_report: Path | None = None
     evidence_manifest: Path | None = None
+    prototype_assignments: Path | None = None
+    contour_evidence_chains: Path | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serialisable representation."""
@@ -116,6 +120,8 @@ class SpathoExportResult:
             "region_image_manifest",
             "region_qc_report",
             "evidence_manifest",
+            "prototype_assignments",
+            "contour_evidence_chains",
         ):
             value = getattr(self, key)
             if value is not None:
@@ -180,18 +186,24 @@ def run_spatho_export(
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    region_table, embeddings, dataset = embed_regions(
+    inference_result = embed_region_outputs(
         cfg,
         checkpoint=checkpoint_path,
         batch_size=batch_size,
         device=device,
     )
+    region_table = inference_result.region_table
+    embeddings = inference_result.embeddings
+    dataset = inference_result.dataset
     frame = _build_region_embedding_frame(region_table, embeddings)
+    prototype_frame = _build_prototype_assignment_frame(region_table, inference_result.prototype_assignments)
 
     region_emb_path = out_dir / "region_embeddings.parquet"
     membership_path = out_dir / "region_cell_membership.parquet"
     molecular_path = out_dir / "region_molecular_summary.parquet"
     image_manifest_path = out_dir / "region_image_manifest.json"
+    prototype_path = out_dir / "prototype_assignments.parquet"
+    evidence_chain_path = out_dir / "contour_evidence_chains.jsonl"
     region_qc_path = out_dir / "region_qc_report.json"
     evidence_manifest_path = out_dir / "evidence_manifest.json"
     struct_sum_path = out_dir / "structure_summary.parquet"
@@ -200,6 +212,7 @@ def run_spatho_export(
     frame.to_parquet(region_emb_path, index=False)
     dataset.cell_membership.to_parquet(membership_path, index=False)
     _build_region_molecular_summary(dataset).to_parquet(molecular_path, index=False)
+    prototype_frame.to_parquet(prototype_path, index=False)
     image_manifest_path.write_text(json.dumps(_build_region_image_manifest(region_table), indent=2), encoding="utf-8")
     summary = _build_structure_summary(frame)
     summary.to_parquet(struct_sum_path, index=False)
@@ -210,18 +223,37 @@ def run_spatho_export(
     n_with_image = int((frame["qc_flag"] == "ok").sum()) if "qc_flag" in frame else 0
     qc_payload = _build_region_qc_report(cfg, checkpoint_path, frame, dataset)
     region_qc_path.write_text(json.dumps(qc_payload, indent=2), encoding="utf-8")
+    _write_contour_evidence_chains(
+        evidence_chain_path,
+        frame,
+        prototype_frame,
+        cfg,
+        checkpoint_path=checkpoint_path,
+        batch_size=batch_size,
+        device=device,
+    )
+    artifacts = {
+        "region_embeddings": str(region_emb_path),
+        "region_cell_membership": str(membership_path),
+        "region_molecular_summary": str(molecular_path),
+        "region_image_manifest": str(image_manifest_path),
+        "prototype_assignments": str(prototype_path),
+        "contour_evidence_chains": str(evidence_chain_path),
+        "region_qc_report": str(region_qc_path),
+    }
     evidence_manifest_path.write_text(
         json.dumps(
             {
                 "case_name": cfg.case_name,
                 "checkpoint": str(checkpoint_path),
                 "training_unit": "region",
-                "artifacts": {
-                    "region_embeddings": str(region_emb_path),
-                    "region_cell_membership": str(membership_path),
-                    "region_molecular_summary": str(molecular_path),
-                    "region_image_manifest": str(image_manifest_path),
-                    "region_qc_report": str(region_qc_path),
+                "contract": "stgpt.spatho_evidence_bundle.v0.1",
+                "rule": "json_stores_pointers_parquet_stores_matrices",
+                "artifacts": artifacts,
+                "provenance": {
+                    "config_hash": _config_hash(cfg),
+                    "checkpoint_hash": _sha256_path(checkpoint_path),
+                    "contour_manifest_hash": _sha256_optional_path(cfg.data.path_or_none(cfg.data.contour_manifest)),
                 },
             },
             indent=2,
@@ -243,6 +275,8 @@ def run_spatho_export(
         region_image_manifest=image_manifest_path,
         region_qc_report=region_qc_path,
         evidence_manifest=evidence_manifest_path,
+        prototype_assignments=prototype_path,
+        contour_evidence_chains=evidence_chain_path,
     )
 
 
@@ -265,9 +299,115 @@ def _build_region_molecular_summary(dataset) -> pd.DataFrame:
     return frame
 
 
+def _build_prototype_assignment_frame(region_table: pd.DataFrame, assignments: pd.DataFrame) -> pd.DataFrame:
+    meta_columns = [
+        column
+        for column in ("region_id", "contour_id", "slide_id", "patient_id", "batch_id", "row_index", "structure_label", "qc_flag")
+        if column in region_table.columns
+    ]
+    meta = region_table[meta_columns].copy().reset_index(drop=True) if meta_columns else pd.DataFrame(index=region_table.index)
+    meta.insert(0, "embedding_row_index", np.arange(len(region_table), dtype=np.int64))
+    if "region_id" not in meta.columns and "region_id" in region_table.columns:
+        meta["region_id"] = region_table["region_id"].astype(str).to_numpy()
+
+    assign = assignments.copy().reset_index(drop=True)
+    if len(assign) != len(meta):
+        assign = pd.DataFrame({"region_id": meta["region_id"].astype(str).to_numpy() if "region_id" in meta else []})
+    duplicate_cols = [column for column in assign.columns if column in meta.columns]
+    assign = assign.drop(columns=duplicate_cols, errors="ignore")
+    frame = pd.concat([meta, assign], axis=1)
+    if "prototype_id" not in frame.columns:
+        frame["prototype_id"] = -1
+    if "prototype_confidence" not in frame.columns:
+        frame["prototype_confidence"] = np.nan
+    if "assignment_entropy" not in frame.columns:
+        frame["assignment_entropy"] = np.nan
+    return frame
+
+
 def _build_region_image_manifest(region_table: pd.DataFrame) -> dict[str, Any]:
     cols = [col for col in ("region_id", "image_path", "patch_x", "patch_y", "patch_size", "source_image", "registration_transform") if col in region_table]
     return {"regions": region_table[cols].to_dict(orient="records") if cols else []}
+
+
+def _write_contour_evidence_chains(
+    path: Path,
+    frame: pd.DataFrame,
+    prototype_frame: pd.DataFrame,
+    cfg: StGPTConfig,
+    *,
+    checkpoint_path: Path,
+    batch_size: int,
+    device: str,
+) -> None:
+    config_hash = _config_hash(cfg)
+    checkpoint_hash = _sha256_path(checkpoint_path)
+    contour_manifest_hash = _sha256_optional_path(cfg.data.path_or_none(cfg.data.contour_manifest))
+    emb_cols = [column for column in frame.columns if str(column).startswith("emb_")]
+    with path.open("w", encoding="utf-8") as handle:
+        for row_idx, row in frame.reset_index(drop=True).iterrows():
+            proto_row = prototype_frame.iloc[row_idx] if row_idx < len(prototype_frame) else pd.Series(dtype=object)
+            source_row_index = _nullable_int(row.get("row_index"))
+            prototype_id = _nullable_int(proto_row.get("prototype_id"))
+            record = {
+                "schema_version": "stgpt.evidence_pointer.v0.1",
+                "evidence_id": _evidence_id(cfg.case_name, row, row_idx),
+                "unit": {
+                    "type": "contour_region",
+                    "region_id": _string_or_none(row.get("region_id")),
+                    "contour_id": _string_or_none(row.get("contour_id")) or _string_or_none(row.get("region_id")),
+                    "slide_id": _string_or_none(row.get("slide_id")),
+                    "row_index": source_row_index,
+                    "embedding_row_index": row_idx,
+                },
+                "measured_evidence": {
+                    "molecular_ref": {
+                        "artifact": "region_molecular_summary.parquet",
+                        "row_index": row_idx,
+                        "matrix": "region_mean_expression",
+                    },
+                    "image_ref": _image_pointer(row, cfg, row_idx=row_idx, source_row_index=source_row_index),
+                    "geometry_ref": _geometry_pointer(cfg, row_idx=row_idx, source_row_index=source_row_index),
+                    "spatial": {
+                        "x": _nullable_float(row.get("x")),
+                        "y": _nullable_float(row.get("y")),
+                        "coordinate_space": "physical_or_registered_input",
+                    },
+                },
+                "model_derived_evidence": {
+                    "embedding_ref": {
+                        "artifact": "region_embeddings.parquet",
+                        "row_index": row_idx,
+                        "vector_column_prefix": "emb_",
+                        "embedding_dim": len(emb_cols),
+                    },
+                    "prototype_ref": {
+                        "artifact": "prototype_assignments.parquet",
+                        "row_index": row_idx,
+                        "prototype_id": prototype_id,
+                        "confidence": _nullable_float(proto_row.get("prototype_confidence")),
+                        "assignment_entropy": _nullable_float(proto_row.get("assignment_entropy")),
+                    },
+                },
+                "qc_verdict": {
+                    "qc_flag": _string_or_none(row.get("qc_flag")) or "unknown",
+                    "image_source": _image_source(row, cfg, source_row_index),
+                    "registration_status": "unverified",
+                },
+                "provenance": {
+                    "case_name": cfg.case_name,
+                    "checkpoint": str(checkpoint_path),
+                    "checkpoint_hash": checkpoint_hash,
+                    "config_hash": config_hash,
+                    "contour_manifest_hash": contour_manifest_hash,
+                    "tool_call": {
+                        "tool": "stgpt.spatho.run_spatho_export",
+                        "batch_size": int(batch_size),
+                        "device": str(device),
+                    },
+                },
+            }
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
 def _build_region_qc_report(cfg: StGPTConfig, checkpoint: Path, frame: pd.DataFrame, dataset) -> dict[str, Any]:
@@ -286,6 +426,95 @@ def _build_region_qc_report(cfg: StGPTConfig, checkpoint: Path, frame: pd.DataFr
         if "structure_label" in frame
         else {},
     }
+
+
+def _evidence_id(case_name: str, row: pd.Series, row_idx: int) -> str:
+    region_id = _string_or_none(row.get("region_id")) or f"row-{row_idx}"
+    slide_id = _string_or_none(row.get("slide_id")) or "slide-unknown"
+    digest = hashlib.sha256(f"{case_name}|{slide_id}|{region_id}|{row_idx}".encode()).hexdigest()[:16]
+    return f"ev_{digest}"
+
+
+def _image_pointer(row: pd.Series, cfg: StGPTConfig, *, row_idx: int, source_row_index: int | None) -> dict[str, Any]:
+    store = _string_or_none(row.get("image_store")) or cfg.data.contour_image_store
+    if store and source_row_index is not None:
+        return {
+            "artifact": str(store),
+            "row_index": source_row_index,
+            "arrays": {
+                "object_rgb": cfg.data.object_rgb_key,
+                "context_rgb": cfg.data.context_rgb_key,
+                "mask": cfg.data.mask_key,
+            },
+        }
+    image_path = _string_or_none(row.get("image_path"))
+    if image_path:
+        return {"artifact": image_path, "row_index": None, "source": "image_path"}
+    return {"artifact": "region_image_manifest.json", "row_index": row_idx, "source": "manifest_fallback"}
+
+
+def _geometry_pointer(cfg: StGPTConfig, *, row_idx: int, source_row_index: int | None) -> dict[str, Any]:
+    contour_manifest = cfg.data.contour_manifest
+    if contour_manifest and source_row_index is not None:
+        return {"artifact": str(contour_manifest), "row_index": source_row_index, "columns": "geometry"}
+    return {"artifact": "region_image_manifest.json", "row_index": row_idx, "columns": "geometry_unavailable"}
+
+
+def _image_source(row: pd.Series, cfg: StGPTConfig, source_row_index: int | None) -> str:
+    if (_string_or_none(row.get("image_store")) or cfg.data.contour_image_store) and source_row_index is not None:
+        return "contour_store"
+    if _string_or_none(row.get("image_path")):
+        return "image_path"
+    return "zero_fallback"
+
+
+def _config_hash(cfg: StGPTConfig) -> str:
+    payload = json.dumps(cfg.model_dump(mode="json"), sort_keys=True).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _sha256_optional_path(path: Path | None) -> str | None:
+    if path is None or not path.exists() or not path.is_file():
+        return None
+    return _sha256_path(path)
+
+
+def _sha256_path(path: Path) -> str | None:
+    if not path.exists() or not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _nullable_int(value: Any) -> int | None:
+    if value is None or pd.isna(value):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _nullable_float(value: Any) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(number):
+        return None
+    return number
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None or pd.isna(value):
+        return None
+    text = str(value)
+    return text if text and text.lower() not in {"nan", "none"} else None
 
 
 def _compute_qc_flags(case, cfg: StGPTConfig) -> list[str]:

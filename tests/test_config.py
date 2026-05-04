@@ -37,6 +37,9 @@ training:
     assert cfg.training.max_steps == 2
     assert cfg.split.strategy == "spatial_block"
     assert cfg.split.train_fraction == 0.70
+    assert cfg.model.image_encoder_backend == "cnn"
+    assert cfg.data.image_embedding_store is None
+    assert not cfg.data.require_image_qc_pass
 
 
 def test_apply_ablation_sets_modalities_and_losses() -> None:

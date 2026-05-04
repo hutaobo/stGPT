@@ -1,0 +1,50 @@
+case_name: wta_breast_m6_pilot
+data:
+  mode: xenium_slide
+  output_dir: D:/GitHub/stGPT/outputs/pilot_runs/wta_breast_m6_pilot/case
+  slide_store: D:/GitHub/stGPT/outputs/xenium_slides/WTA_Preview_FFPE_Breast_Cancer_outs/xenium_slide.zarr
+  patch_manifest: D:/GitHub/stGPT/outputs/xenium_slides/WTA_Preview_FFPE_Breast_Cancer_outs/contour_patches_manifest.json
+  structure_assignments_csv: D:/GitHub/stGPT/outputs/xenium_slides/WTA_Preview_FFPE_Breast_Cancer_outs/structure_assignments.csv
+  slide_id: WTA_Preview_FFPE_Breast_Cancer_outs
+  organ: Breast
+  batch_id: Atera_WTA
+  stain: H&E
+  min_cells_per_region: 1
+  include_structure_context: false
+model:
+  d_model: 64
+  n_heads: 4
+  n_layers: 2
+  dim_feedforward: 128
+  max_genes: 256
+  n_expression_bins: 32
+  image_size: 64
+  max_cells_per_region: 16
+  n_prototypes: 64
+  prototype_temperature: 0.1
+training:
+  batch_size: 16
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  max_steps: 32
+  warmup_steps: 4
+  lr_schedule: cosine
+  mask_probability: 0.15
+  neighborhood_k: 8
+  image_gene_loss_weight: 0.05
+  neighborhood_loss_weight: 0.25
+  structure_loss_weight: 0.0
+  prototype_loss_weight: 0.1
+  prototype_queue_size: 256
+  prototype_queue_start_steps: 1
+  prototype_sinkhorn_iterations: 3
+  output_dir: D:/GitHub/stGPT/outputs/pilot_runs/wta_breast_m6_pilot/train
+  device: cpu
+  num_workers: 0
+  seed: 7
+split:
+  strategy: spatial_block
+  train_fraction: 0.7
+  val_fraction: 0.15
+  test_fraction: 0.15
+  seed: 11

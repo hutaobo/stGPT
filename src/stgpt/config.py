@@ -44,6 +44,15 @@ class DataConfig(BaseModel):
     input_h5ad_list: list[str] | None = None
     spatho_run_root: str | None = None
     patch_manifest: str | None = None
+    contour_image_store: str | None = None
+    contour_manifest: str | None = None
+    image_embedding_store: str | None = None
+    require_image_qc_pass: bool = False
+    image_stain_normalization: Literal["none", "offline"] = "none"
+    object_rgb_key: str = "object_rgb"
+    context_rgb_key: str = "context_rgb"
+    mask_key: str = "soft_mask"
+    geometry_key: str = "geometry"
     structure_assignments_csv: str | None = None
     panel_genes: list[str] | None = None
     panel_gene_file: str | None = None
@@ -94,8 +103,14 @@ class ModelConfig(BaseModel):
     n_expression_bins: int = Field(default=51, ge=2)
     image_size: int = Field(default=224, ge=16)
     image_channels: int = Field(default=3, ge=1)
+    image_encoder_backend: Literal["cnn", "timm", "hf", "precomputed"] = "cnn"
+    image_encoder_name: str | None = None
+    image_encoder_frozen: bool = True
+    image_embedding_dim: int | None = Field(default=None, ge=1)
     patch_scales: list[int] = Field(default_factory=lambda: [1])
     max_cells_per_region: int = Field(default=64, ge=1)
+    n_prototypes: int = Field(default=0, ge=0)
+    prototype_temperature: float = Field(default=0.1, gt=0.0)
     use_expression_values: bool = True
     use_image_context: bool = True
     use_spatial_context: bool = True
@@ -136,9 +151,15 @@ class TrainingConfig(BaseModel):
     image_gene_loss_weight: float = Field(default=0.1, ge=0.0)
     neighborhood_loss_weight: float = Field(default=0.25, ge=0.0)
     structure_loss_weight: float = Field(default=0.1, ge=0.0)
+    prototype_loss_weight: float = Field(default=0.1, ge=0.0)
     image_gene_loss_warmup_steps: int = Field(default=0, ge=0)
     neighborhood_loss_warmup_steps: int = Field(default=0, ge=0)
     structure_loss_warmup_steps: int = Field(default=0, ge=0)
+    prototype_loss_warmup_steps: int = Field(default=0, ge=0)
+    prototype_queue_size: int = Field(default=16384, ge=0)
+    prototype_queue_start_steps: int = Field(default=0, ge=0)
+    prototype_sinkhorn_iterations: int = Field(default=3, ge=1)
+    prototype_sinkhorn_epsilon: float = Field(default=1e-6, gt=0.0)
     output_dir: str = "outputs/stgpt/train"
     device: str = "auto"
     num_workers: int = Field(default=0, ge=0)

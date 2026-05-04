@@ -49,7 +49,15 @@ def _small_config(tmp_path: Path) -> StGPTConfig:
             image_size=32,
             seed=42,
         ),
-        model=ModelConfig(d_model=32, n_heads=4, n_layers=1, max_genes=12, image_size=32, n_expression_bins=8),
+        model=ModelConfig(
+            d_model=32,
+            n_heads=4,
+            n_layers=1,
+            max_genes=12,
+            image_size=32,
+            n_expression_bins=8,
+            n_prototypes=3,
+        ),
         training=TrainingConfig(batch_size=4, max_steps=1, output_dir=str(tmp_path / "train"), device="cpu", seed=7),
         split=SplitConfig(seed=3),
     )
@@ -74,6 +82,8 @@ model:
   max_genes: {cfg.model.max_genes}
   n_expression_bins: {cfg.model.n_expression_bins}
   image_size: {cfg.model.image_size}
+  n_prototypes: {cfg.model.n_prototypes}
+  prototype_temperature: {cfg.model.prototype_temperature}
 training:
   batch_size: {cfg.training.batch_size}
   max_steps: {cfg.training.max_steps}
@@ -138,6 +148,8 @@ def test_full_pipeline_validate_train_evaluate_export(tmp_path: Path) -> None:
     assert export_result.region_image_manifest is not None and export_result.region_image_manifest.exists()
     assert export_result.region_qc_report is not None and export_result.region_qc_report.exists()
     assert export_result.evidence_manifest is not None and export_result.evidence_manifest.exists()
+    assert export_result.prototype_assignments is not None and export_result.prototype_assignments.exists()
+    assert export_result.contour_evidence_chains is not None and export_result.contour_evidence_chains.exists()
     assert export_result.structure_summary.exists()
     assert export_result.qc_report.exists()
 
@@ -222,6 +234,8 @@ def test_run_spatho_export_writes_all_artifacts(tmp_path: Path) -> None:
     assert result.region_molecular_summary is not None and result.region_molecular_summary.exists()
     assert result.region_image_manifest is not None and result.region_image_manifest.exists()
     assert result.evidence_manifest is not None and result.evidence_manifest.exists()
+    assert result.prototype_assignments is not None and result.prototype_assignments.exists()
+    assert result.contour_evidence_chains is not None and result.contour_evidence_chains.exists()
     assert result.structure_summary.exists()
     assert result.qc_report.exists()
 
@@ -265,7 +279,34 @@ def test_run_spatho_export_qc_report_content(tmp_path: Path) -> None:
     assert "structure_counts" in payload
     evidence = json.loads(result.evidence_manifest.read_text(encoding="utf-8")) if result.evidence_manifest else {}
     assert evidence["training_unit"] == "region"
+    assert evidence["rule"] == "json_stores_pointers_parquet_stores_matrices"
     assert "region_embeddings" in evidence["artifacts"]
+    assert "prototype_assignments" in evidence["artifacts"]
+    assert "contour_evidence_chains" in evidence["artifacts"]
+
+
+def test_run_spatho_export_writes_pointer_evidence_bundle(tmp_path: Path) -> None:
+    cfg = _small_config(tmp_path)
+    checkpoint = _checkpoint(tmp_path, cfg)
+    result = run_spatho_export(cfg, checkpoint=checkpoint, output_dir=tmp_path / "out", batch_size=4, device="cpu")
+
+    assert result.prototype_assignments is not None
+    prototype_frame = pd.read_parquet(result.prototype_assignments)
+    for column in ("embedding_row_index", "region_id", "prototype_id", "prototype_confidence", "assignment_entropy"):
+        assert column in prototype_frame.columns
+    assert len(prototype_frame) == result.n_cells
+    assert prototype_frame["prototype_id"].ge(0).all()
+
+    assert result.contour_evidence_chains is not None
+    first = json.loads(result.contour_evidence_chains.read_text(encoding="utf-8").splitlines()[0])
+    assert first["schema_version"] == "stgpt.evidence_pointer.v0.1"
+    assert "measured_evidence" in first
+    assert "model_derived_evidence" in first
+    assert first["measured_evidence"]["molecular_ref"]["artifact"] == "region_molecular_summary.parquet"
+    assert first["model_derived_evidence"]["embedding_ref"]["artifact"] == "region_embeddings.parquet"
+    assert first["model_derived_evidence"]["prototype_ref"]["artifact"] == "prototype_assignments.parquet"
+    assert "checkpoint_hash" in first["provenance"]
+    assert "emb_0" not in json.dumps(first)
 
 
 def test_run_spatho_export_result_statistics(tmp_path: Path) -> None:
@@ -328,6 +369,8 @@ def test_cli_export_spatho_writes_artifacts(tmp_path: Path) -> None:
     assert Path(payload["region_molecular_summary"]).exists()
     assert Path(payload["structure_summary"]).exists()
     assert Path(payload["qc_report"]).exists()
+    assert Path(payload["prototype_assignments"]).exists()
+    assert Path(payload["contour_evidence_chains"]).exists()
     assert payload["n_cells"] > 0
     assert Path(payload["region_embeddings"]).exists()
 

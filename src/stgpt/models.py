@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import torch
 import torch.nn.functional as F
@@ -16,6 +16,10 @@ class ImageGeneSTGPTOutput:
     region_emb: Tensor
     image_emb: Tensor
     structure_logits: Tensor | None
+    prototype_logits: Tensor | None = None
+    prototype_probs: Tensor | None = None
+    prototype_ids: Tensor | None = None
+    prototype_confidence: Tensor | None = None
 
     @property
     def cell_emb(self) -> Tensor:
@@ -58,6 +62,270 @@ class PatchEncoder(nn.Module):
         return self.fusion(torch.cat(features, dim=1) if len(features) > 1 else features[0])
 
 
+ImageEncoderBackend = Literal["cnn", "timm", "hf", "precomputed"]
+
+
+class TimmImageEncoder(nn.Module):
+    """Frozen timm feature extractor plus a trainable projection into stGPT space."""
+
+    def __init__(self, name: str, d_model: int, *, frozen: bool = True) -> None:
+        super().__init__()
+        try:
+            import timm  # type: ignore[import-untyped]
+        except Exception as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError("Install timm to use model.image_encoder_backend='timm'.") from exc
+        self.name = str(name)
+        self.frozen = bool(frozen)
+        self.encoder = timm.create_model(self.name, pretrained=True, num_classes=0, global_pool="avg")
+        feature_dim = int(getattr(self.encoder, "num_features", 0) or 0)
+        self.projection = nn.Sequential(
+            nn.Linear(feature_dim, d_model) if feature_dim > 0 else nn.LazyLinear(d_model),
+            nn.GELU(),
+            nn.LayerNorm(d_model),
+        )
+        if self.frozen:
+            self.encoder.eval()
+            for parameter in self.encoder.parameters():
+                parameter.requires_grad_(False)
+
+    def forward(self, image: Tensor) -> Tensor:
+        if self.frozen:
+            self.encoder.eval()
+            with torch.no_grad():
+                features = self.encoder(image)
+        else:
+            features = self.encoder(image)
+        if isinstance(features, (list, tuple)):
+            features = features[0]
+        if features.ndim > 2:
+            features = features.flatten(start_dim=2).mean(dim=-1)
+        return self.projection(features.float())
+
+
+class HFImageEncoder(nn.Module):
+    """Frozen Hugging Face vision backbone plus a trainable projection."""
+
+    def __init__(self, name: str, d_model: int, *, frozen: bool = True) -> None:
+        super().__init__()
+        try:
+            from transformers import AutoModel  # type: ignore[import-untyped]
+        except Exception as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError("Install transformers to use model.image_encoder_backend='hf'.") from exc
+        self.name = str(name)
+        self.frozen = bool(frozen)
+        self.encoder = AutoModel.from_pretrained(self.name)
+        feature_dim = int(getattr(getattr(self.encoder, "config", None), "hidden_size", 0) or 0)
+        self.projection = nn.Sequential(
+            nn.Linear(feature_dim, d_model) if feature_dim > 0 else nn.LazyLinear(d_model),
+            nn.GELU(),
+            nn.LayerNorm(d_model),
+        )
+        if self.frozen:
+            self.encoder.eval()
+            for parameter in self.encoder.parameters():
+                parameter.requires_grad_(False)
+
+    def forward(self, image: Tensor) -> Tensor:
+        if self.frozen:
+            self.encoder.eval()
+            with torch.no_grad():
+                output = self.encoder(pixel_values=image)
+        else:
+            output = self.encoder(pixel_values=image)
+        features = getattr(output, "pooler_output", None)
+        if features is None:
+            hidden = getattr(output, "last_hidden_state", None)
+            if hidden is None and isinstance(output, (list, tuple)) and output:
+                hidden = output[0]
+            if hidden is None:
+                raise RuntimeError("Hugging Face image encoder did not return pooler_output or last_hidden_state.")
+            features = hidden[:, 0] if hidden.ndim == 3 else hidden
+        return self.projection(features.float())
+
+
+def build_image_encoder(
+    *,
+    backend: ImageEncoderBackend,
+    image_channels: int,
+    d_model: int,
+    scales: list[int] | tuple[int, ...] = (1,),
+    name: str | None = None,
+    frozen: bool = True,
+) -> nn.Module:
+    if backend == "cnn":
+        return PatchEncoder(image_channels, d_model, scales=scales)
+    if backend == "timm":
+        if not name:
+            raise ValueError("model.image_encoder_name is required for image_encoder_backend='timm'.")
+        return TimmImageEncoder(name, d_model, frozen=frozen)
+    if backend == "hf":
+        if not name:
+            raise ValueError("model.image_encoder_name is required for image_encoder_backend='hf'.")
+        return HFImageEncoder(name, d_model, frozen=frozen)
+    raise ValueError("build_image_encoder does not build the precomputed backend.")
+
+
+def image_encoder_provenance(config: Any) -> dict[str, Any]:
+    model = getattr(config, "model", config)
+    data = getattr(config, "data", None)
+    backend = str(getattr(model, "image_encoder_backend", "cnn"))
+    if data is not None and getattr(data, "image_embedding_store", None):
+        backend = "precomputed"
+    return {
+        "backend": backend,
+        "name": getattr(model, "image_encoder_name", None),
+        "frozen": bool(getattr(model, "image_encoder_frozen", True)),
+        "image_embedding_dim": getattr(model, "image_embedding_dim", None),
+        "image_size": getattr(model, "image_size", None),
+        "image_channels": getattr(model, "image_channels", None),
+        "patch_scales": list(getattr(model, "patch_scales", [1])),
+        "image_embedding_store": getattr(data, "image_embedding_store", None) if data is not None else None,
+        "stain_normalization": getattr(data, "image_stain_normalization", None) if data is not None else None,
+    }
+
+
+class ContourEvidenceEncoder(nn.Module):
+    def __init__(
+        self,
+        image_channels: int,
+        d_model: int,
+        *,
+        scales: list[int] | tuple[int, ...] = (1,),
+        image_encoder_backend: ImageEncoderBackend = "cnn",
+        image_encoder_name: str | None = None,
+        image_encoder_frozen: bool = True,
+        image_embedding_dim: int | None = None,
+    ) -> None:
+        super().__init__()
+        self.image_encoder_backend = str(image_encoder_backend)
+        self.image_embedding_dim = image_embedding_dim
+        if image_encoder_backend == "precomputed":
+            self.object_encoder = None
+            self.context_encoder = None
+        else:
+            self.object_encoder = build_image_encoder(
+                backend=image_encoder_backend,
+                image_channels=image_channels,
+                d_model=d_model,
+                scales=scales,
+                name=image_encoder_name,
+                frozen=image_encoder_frozen,
+            )
+            self.context_encoder = build_image_encoder(
+                backend=image_encoder_backend,
+                image_channels=image_channels,
+                d_model=d_model,
+                scales=scales,
+                name=image_encoder_name,
+                frozen=image_encoder_frozen,
+            )
+        self.precomputed_projection = (
+            self._precomputed_projection(image_embedding_dim, d_model)
+            if image_encoder_backend == "precomputed"
+            else nn.Identity()
+        )
+        self.shape_encoder = nn.Sequential(nn.LazyLinear(d_model), nn.GELU(), nn.LayerNorm(d_model))
+        self.token_norm = nn.LayerNorm(d_model)
+        self.summary = nn.Sequential(nn.Linear(d_model * 3, d_model), nn.GELU(), nn.LayerNorm(d_model))
+
+    def forward(
+        self,
+        *,
+        object_image: Tensor,
+        context_image: Tensor | None = None,
+        contour_mask: Tensor | None = None,
+        contour_geometry: Tensor | None = None,
+        precomputed_image_embedding: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        if precomputed_image_embedding is not None and precomputed_image_embedding.numel() > 0:
+            image_token = self.precomputed_projection(precomputed_image_embedding.float())
+            shape_token = self._shape_token(object_image, contour_geometry)
+            tokens = self.token_norm(torch.stack([image_token, image_token, shape_token], dim=1))
+            return tokens, self.summary(tokens.flatten(start_dim=1))
+        if self.object_encoder is None or self.context_encoder is None:
+            raise ValueError("precomputed image encoder backend requires precomputed_image_embedding tensors.")
+        context_image = object_image if context_image is None else context_image
+        masked_object = self._masked_object(object_image, contour_mask)
+        object_token = self.object_encoder(masked_object)
+        context_token = self.context_encoder(context_image)
+        shape_token = self._shape_token(object_image, contour_geometry)
+        tokens = self.token_norm(torch.stack([object_token, context_token, shape_token], dim=1))
+        image_emb = self.summary(tokens.flatten(start_dim=1))
+        return tokens, image_emb
+
+    @staticmethod
+    def _precomputed_projection(image_embedding_dim: int | None, d_model: int) -> nn.Module:
+        if image_embedding_dim == d_model:
+            return nn.Identity()
+        return nn.Sequential(
+            nn.Linear(image_embedding_dim, d_model) if image_embedding_dim else nn.LazyLinear(d_model),
+            nn.GELU(),
+            nn.LayerNorm(d_model),
+        )
+
+    @staticmethod
+    def _masked_object(object_image: Tensor, contour_mask: Tensor | None) -> Tensor:
+        if contour_mask is None or contour_mask.numel() == 0:
+            return object_image
+        mask = contour_mask.to(device=object_image.device, dtype=object_image.dtype)
+        if mask.ndim == 3:
+            mask = mask.unsqueeze(1)
+        if mask.shape[-2:] != object_image.shape[-2:]:
+            mask = F.interpolate(mask, size=object_image.shape[-2:], mode="nearest")
+        if mask.shape[1] == 1 and object_image.shape[1] > 1:
+            mask = mask.expand(-1, object_image.shape[1], -1, -1)
+        fill = object_image.mean(dim=(-2, -1), keepdim=True)
+        return object_image * mask + fill * (1.0 - mask)
+
+    def _shape_token(self, object_image: Tensor, contour_geometry: Tensor | None) -> Tensor:
+        batch_size = int(object_image.shape[0])
+        if contour_geometry is None or contour_geometry.numel() == 0:
+            contour_geometry = torch.zeros(batch_size, 1, dtype=object_image.dtype, device=object_image.device)
+        else:
+            contour_geometry = contour_geometry.to(device=object_image.device, dtype=object_image.dtype)
+            if contour_geometry.ndim == 1:
+                contour_geometry = contour_geometry.unsqueeze(1)
+        return self.shape_encoder(contour_geometry)
+
+
+class GatedCrossAttentionBlock(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        *,
+        dim_feedforward: int | None = None,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+        hidden = dim_feedforward or d_model * 4
+        self.cross_attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, hidden),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, d_model),
+        )
+        self.dropout = nn.Dropout(dropout)
+        self.attn_gate = nn.Parameter(torch.zeros(1))
+        self.ffn_gate = nn.Parameter(torch.zeros(1))
+
+    def forward(self, query_tokens: Tensor, evidence_tokens: Tensor) -> Tensor:
+        if evidence_tokens.numel() == 0:
+            return query_tokens
+        attn_out, _ = self.cross_attn(
+            query=self.norm1(query_tokens),
+            key=evidence_tokens,
+            value=evidence_tokens,
+            need_weights=False,
+        )
+        hidden = query_tokens + torch.tanh(self.attn_gate) * self.dropout(attn_out)
+        ffn_out = self.ffn(self.norm2(hidden))
+        return hidden + torch.tanh(self.ffn_gate) * self.dropout(ffn_out)
+
+
 class ImageGeneSTGPT(nn.Module):
     def __init__(
         self,
@@ -71,6 +339,12 @@ class ImageGeneSTGPT(nn.Module):
         n_expression_bins: int = 51,
         image_channels: int = 3,
         patch_scales: list[int] | tuple[int, ...] = (1,),
+        image_encoder_backend: ImageEncoderBackend = "cnn",
+        image_encoder_name: str | None = None,
+        image_encoder_frozen: bool = True,
+        image_embedding_dim: int | None = None,
+        n_prototypes: int = 0,
+        prototype_temperature: float = 0.1,
         use_expression_values: bool = True,
         use_image_context: bool = True,
         use_spatial_context: bool = True,
@@ -83,16 +357,31 @@ class ImageGeneSTGPT(nn.Module):
             raise ValueError("d_model must be divisible by n_heads")
         self.n_genes = int(n_genes)
         self.n_structures = int(max(1, n_structures))
+        self.n_prototypes = int(max(0, n_prototypes))
+        self.prototype_temperature = float(prototype_temperature)
         self.d_model = int(d_model)
         self.use_expression_values = bool(use_expression_values)
         self.use_image_context = bool(use_image_context)
         self.use_spatial_context = bool(use_spatial_context)
         self.use_structure_context = bool(use_structure_context)
         self.use_cell_context = bool(use_cell_context)
+        self.image_encoder_backend = str(image_encoder_backend)
+        self.image_encoder_name = image_encoder_name
+        self.image_encoder_frozen = bool(image_encoder_frozen)
+        self.image_embedding_dim = image_embedding_dim
         self.gene_embedding = nn.Embedding(self.n_genes + 1, d_model, padding_idx=0)
         self.expression_value = nn.Sequential(nn.Linear(1, d_model), nn.GELU(), nn.LayerNorm(d_model))
         self.expression_bin = nn.Embedding(n_expression_bins, d_model)
         self.patch_encoder = PatchEncoder(image_channels, d_model, scales=patch_scales)
+        self.contour_encoder = ContourEvidenceEncoder(
+            image_channels,
+            d_model,
+            scales=patch_scales,
+            image_encoder_backend=image_encoder_backend,
+            image_encoder_name=image_encoder_name,
+            image_encoder_frozen=image_encoder_frozen,
+            image_embedding_dim=image_embedding_dim,
+        )
         self.spatial_encoder = nn.Sequential(nn.Linear(2, d_model), nn.GELU(), nn.LayerNorm(d_model))
         self.context_embedding = nn.Embedding(self.n_structures + 1, d_model, padding_idx=0)
         self.cell_context_norm = nn.LayerNorm(d_model)
@@ -107,10 +396,17 @@ class ImageGeneSTGPT(nn.Module):
             norm_first=True,
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=n_layers)
+        self.gated_fusion = GatedCrossAttentionBlock(
+            d_model,
+            n_heads,
+            dim_feedforward=dim_feedforward or d_model * 4,
+            dropout=dropout,
+        )
         self.final_norm = nn.LayerNorm(d_model)
         self.gene_decoder = nn.Sequential(nn.Linear(d_model, d_model), nn.GELU(), nn.Linear(d_model, 1))
         self.neighbor_decoder = nn.Sequential(nn.Linear(d_model, d_model), nn.GELU(), nn.Linear(d_model, 1))
         self.structure_head = nn.Linear(d_model, self.n_structures) if self.n_structures > 1 else None
+        self.prototype_head = nn.Linear(d_model, self.n_prototypes, bias=False) if self.n_prototypes > 0 else None
         nn.init.normal_(self.cls_token, std=0.02)
 
     @classmethod
@@ -160,6 +456,12 @@ class ImageGeneSTGPT(nn.Module):
             n_expression_bins=cfg.model.n_expression_bins,
             image_channels=cfg.model.image_channels,
             patch_scales=cfg.model.patch_scales,
+            image_encoder_backend="precomputed" if cfg.data.image_embedding_store else cfg.model.image_encoder_backend,
+            image_encoder_name=cfg.model.image_encoder_name,
+            image_encoder_frozen=cfg.model.image_encoder_frozen,
+            image_embedding_dim=cfg.model.image_embedding_dim,
+            n_prototypes=cfg.model.n_prototypes,
+            prototype_temperature=cfg.model.prototype_temperature,
             use_expression_values=cfg.model.use_expression_values,
             use_image_context=cfg.model.use_image_context,
             use_spatial_context=cfg.model.use_spatial_context,
@@ -202,6 +504,11 @@ class ImageGeneSTGPT(nn.Module):
         gene_padding_mask: Tensor | None = None,
         cell_expr_values: Tensor | None = None,
         cell_token_mask: Tensor | None = None,
+        object_image: Tensor | None = None,
+        context_image: Tensor | None = None,
+        contour_mask: Tensor | None = None,
+        contour_geometry: Tensor | None = None,
+        precomputed_image_embedding: Tensor | None = None,
     ) -> ImageGeneSTGPTOutput:
         batch_size, seq_len = gene_ids.shape
         if gene_padding_mask is None:
@@ -218,36 +525,91 @@ class ImageGeneSTGPT(nn.Module):
             bin_tok = torch.zeros_like(gene_tok)
         gene_tokens = gene_tok + value_tok + bin_tok
 
-        image_emb = self.patch_encoder(image)
+        contour_tokens, image_emb = self._contour_tokens(
+            image=image,
+            object_image=object_image,
+            context_image=context_image,
+            contour_mask=contour_mask,
+            contour_geometry=contour_geometry,
+            precomputed_image_embedding=precomputed_image_embedding,
+        )
         if not self.use_image_context:
             image_emb = torch.zeros_like(image_emb)
+            contour_tokens = torch.zeros_like(contour_tokens)
         spatial_emb = self.spatial_encoder(spatial.float())
         if not self.use_spatial_context:
             spatial_emb = torch.zeros_like(spatial_emb)
         context_emb = self.context_embedding(context_ids.clamp(min=0, max=self.n_structures))
         if not self.use_structure_context:
             context_emb = torch.zeros_like(context_emb)
+        evidence_tokens = torch.cat([contour_tokens, torch.stack([spatial_emb, context_emb], dim=1)], dim=1)
         cell_tokens, cell_padding_mask = self._cell_context_tokens(gene_tok, cell_expr_values, cell_token_mask)
         cls = self.cls_token.expand(batch_size, -1, -1)
-        prefix = torch.stack([image_emb, spatial_emb, context_emb], dim=1)
-        tokens = torch.cat([cls, prefix, cell_tokens, gene_tokens], dim=1)
+        tokens = torch.cat([cls, cell_tokens, gene_tokens], dim=1)
 
-        prefix_mask = torch.zeros(batch_size, 4, dtype=torch.bool, device=gene_ids.device)
-        padding_mask = torch.cat([prefix_mask, cell_padding_mask, gene_padding_mask], dim=1)
-        encoded = self.final_norm(self.transformer(tokens, src_key_padding_mask=padding_mask))
+        cls_mask = torch.zeros(batch_size, 1, dtype=torch.bool, device=gene_ids.device)
+        padding_mask = torch.cat([cls_mask, cell_padding_mask, gene_padding_mask], dim=1)
+        encoded = self.final_norm(self._run_gated_midfusion(tokens, evidence_tokens, padding_mask))
         region_emb = encoded[:, 0, :]
-        gene_start = 4 + cell_tokens.shape[1]
+        normalized_region_emb = F.normalize(region_emb, dim=1)
+        gene_start = 1 + cell_tokens.shape[1]
         gene_out = encoded[:, gene_start : gene_start + seq_len, :]
         gene_pred = self.gene_decoder(gene_out).squeeze(-1)
         neighbor_pred = self.neighbor_decoder(gene_out).squeeze(-1)
         structure_logits = self.structure_head(region_emb) if self.structure_head is not None else None
+        prototype_logits, prototype_probs, prototype_ids, prototype_confidence = self._prototype_outputs(normalized_region_emb)
         return ImageGeneSTGPTOutput(
             gene_pred=gene_pred,
             neighbor_pred=neighbor_pred,
-            region_emb=F.normalize(region_emb, dim=1),
+            region_emb=normalized_region_emb,
             image_emb=F.normalize(image_emb, dim=1),
             structure_logits=structure_logits,
+            prototype_logits=prototype_logits,
+            prototype_probs=prototype_probs,
+            prototype_ids=prototype_ids,
+            prototype_confidence=prototype_confidence,
         )
+
+    def _prototype_outputs(self, region_emb: Tensor) -> tuple[Tensor | None, Tensor | None, Tensor | None, Tensor | None]:
+        if self.prototype_head is None:
+            return None, None, None, None
+        prototype_weight = F.normalize(self.prototype_head.weight, dim=1)
+        logits = F.linear(region_emb, prototype_weight)
+        probs = torch.softmax(logits / max(self.prototype_temperature, 1e-6), dim=1)
+        confidence, ids = probs.max(dim=1)
+        return logits, probs, ids, confidence
+
+    def _run_gated_midfusion(self, tokens: Tensor, evidence_tokens: Tensor, padding_mask: Tensor) -> Tensor:
+        layers = list(self.transformer.layers)
+        if not layers:
+            return self.gated_fusion(tokens, evidence_tokens)
+        fusion_after = max(0, len(layers) // 2 - 1)
+        hidden = tokens
+        for layer_idx, layer in enumerate(layers):
+            hidden = layer(hidden, src_key_padding_mask=padding_mask)
+            if layer_idx == fusion_after:
+                hidden = self.gated_fusion(hidden, evidence_tokens)
+        return hidden
+
+    def _contour_tokens(
+        self,
+        *,
+        image: Tensor,
+        object_image: Tensor | None,
+        context_image: Tensor | None,
+        contour_mask: Tensor | None,
+        contour_geometry: Tensor | None,
+        precomputed_image_embedding: Tensor | None,
+    ) -> tuple[Tensor, Tensor]:
+        object_input = image if object_image is None else object_image
+        tokens, image_emb = self.contour_encoder(
+            object_image=object_input,
+            context_image=context_image,
+            contour_mask=contour_mask,
+            contour_geometry=contour_geometry,
+            precomputed_image_embedding=precomputed_image_embedding,
+        )
+        return tokens, image_emb
 
     def _cell_context_tokens(
         self,

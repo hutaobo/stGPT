@@ -11,10 +11,14 @@ import typer
 
 from . import __version__
 from .config import StGPTConfig
+from .contour_store import pack_contour_patches
 from .data import build_training_manifest
 from .evaluation import evaluate as evaluate_model
 from .foundation import package_model as package_model_backend
+from .image_qc import inspect_images as inspect_images_backend
+from .image_qc import precompute_image_embeddings
 from .inference import embed_anndata, write_embeddings_table
+from .inspection import inspect_registry as inspect_registry_backend
 from .qc import validate_data
 from .spatho import run_spatho_export
 from .training import train as train_model
@@ -49,6 +53,68 @@ def validate_data_command(
 ) -> None:
     cfg = StGPTConfig.from_file(config)
     result = validate_data(cfg, output_dir=output)
+    typer.echo(json.dumps(result, indent=2))
+
+
+@app.command("inspect-registry")
+def inspect_registry_command(
+    registry: Annotated[Path, typer.Option("--registry", "-r", exists=True)],
+    root: Annotated[Path | None, typer.Option("--root")] = None,
+    output: Annotated[Path | None, typer.Option("--output", "-o")] = None,
+    sample_images: Annotated[int, typer.Option("--sample-images", min=0)] = 50,
+) -> None:
+    result = inspect_registry_backend(registry, root=root, output=output, sample_images=sample_images)
+    typer.echo(json.dumps(result["summary"], indent=2))
+
+
+@app.command("pack-contour-patches")
+def pack_contour_patches_command(
+    patch_manifest: Annotated[Path, typer.Option("--patch-manifest", exists=True)],
+    store: Annotated[Path, typer.Option("--store")],
+    manifest: Annotated[Path, typer.Option("--manifest")],
+    slide_id: Annotated[str, typer.Option("--slide-id")],
+    image_size: Annotated[int, typer.Option("--image-size", min=16)] = 224,
+    max_neighbors: Annotated[int, typer.Option("--max-neighbors", min=1)] = 16,
+    chunk_size: Annotated[int, typer.Option("--chunk-size", min=1)] = 1024,
+) -> None:
+    result = pack_contour_patches(
+        patch_manifest,
+        store,
+        manifest,
+        slide_id=slide_id,
+        image_size=image_size,
+        max_neighbors=max_neighbors,
+        chunk_size=chunk_size,
+    )
+    typer.echo(json.dumps(result, indent=2))
+
+
+@app.command("inspect-images")
+def inspect_images_command(
+    config: Annotated[Path, typer.Option("--config", "-c", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+) -> None:
+    result = inspect_images_backend(config, output_dir=output)
+    typer.echo(json.dumps(result["summary"], indent=2))
+
+
+@app.command("precompute-images")
+def precompute_images_command(
+    config: Annotated[Path, typer.Option("--config", "-c", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    encoder: Annotated[str | None, typer.Option("--encoder")] = None,
+    encoder_backend: Annotated[str | None, typer.Option("--encoder-backend")] = None,
+    batch_size: Annotated[int, typer.Option("--batch-size", min=1)] = 32,
+    device: Annotated[str, typer.Option("--device")] = "auto",
+) -> None:
+    result = precompute_image_embeddings(
+        config,
+        output=output,
+        encoder_backend=encoder_backend,
+        encoder_name=encoder,
+        batch_size=batch_size,
+        device=device,
+    )
     typer.echo(json.dumps(result, indent=2))
 
 

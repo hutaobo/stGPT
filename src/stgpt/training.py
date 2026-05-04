@@ -14,7 +14,8 @@ from torch.utils.data import DataLoader, Subset
 from .config import AblationMode, StGPTConfig
 from .data import RegionDataset, build_training_case
 from .losses import compute_losses
-from .models import ImageGeneSTGPT
+from .models import ImageGeneSTGPT, image_encoder_provenance
+from .prototypes import ContourMemoryQueue, SinkhornModule, compute_prototype_loss
 from .qc import make_splits
 
 
@@ -37,6 +38,7 @@ def train(
     dataset = RegionDataset(case, cfg)
     if len(dataset) == 0:
         raise ValueError("No trainable contour/region rows were found. Check contour membership and data.min_cells_per_region.")
+    _enforce_image_qc_gate(dataset, cfg)
     splits = make_splits(case, cfg)
     split_values = splits["split"].astype(str).to_numpy()
     train_indices = np.flatnonzero(split_values == "train").astype(int).tolist()
@@ -73,6 +75,12 @@ def train(
         n_expression_bins=cfg.model.n_expression_bins,
         image_channels=cfg.model.image_channels,
         patch_scales=cfg.model.patch_scales,
+        image_encoder_backend=_effective_image_encoder_backend(cfg),
+        image_encoder_name=cfg.model.image_encoder_name,
+        image_encoder_frozen=cfg.model.image_encoder_frozen,
+        image_embedding_dim=cfg.model.image_embedding_dim or dataset.image_embedding_dim or None,
+        n_prototypes=cfg.model.n_prototypes,
+        prototype_temperature=cfg.model.prototype_temperature,
         use_expression_values=cfg.model.use_expression_values,
         use_image_context=cfg.model.use_image_context,
         use_spatial_context=cfg.model.use_spatial_context,
@@ -80,6 +88,7 @@ def train(
         use_cell_context=cfg.model.use_cell_context,
         dropout=cfg.model.dropout,
     ).to(device)
+    prototype_queue, sinkhorn = _make_prototype_tools(cfg, model, device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.training.learning_rate, weight_decay=cfg.training.weight_decay)
     scheduler = _make_scheduler(optimizer, cfg)
     output_dir = cfg.training.output_path
@@ -107,6 +116,11 @@ def train(
                 gene_padding_mask=batch["gene_padding_mask"],
                 cell_expr_values=batch["cell_expr_values"],
                 cell_token_mask=batch["cell_token_mask"],
+                object_image=batch.get("object_image"),
+                context_image=batch.get("context_image"),
+                contour_mask=batch.get("contour_mask"),
+                contour_geometry=batch.get("contour_geometry"),
+                precomputed_image_embedding=batch.get("precomputed_image_embedding"),
             )
             weights = _scheduled_loss_weights(cfg, step + 1)
             losses = compute_losses(
@@ -116,6 +130,18 @@ def train(
                 neighborhood_weight=weights["neighborhood_loss_weight"],
                 structure_weight=weights["structure_loss_weight"],
             )
+            if sinkhorn is not None:
+                prototype_losses = compute_prototype_loss(
+                    output,
+                    prototype_weight=model.prototype_head.weight if model.prototype_head is not None else None,
+                    queue=prototype_queue,
+                    sinkhorn=sinkhorn,
+                    temperature=cfg.model.prototype_temperature,
+                    step=step + 1,
+                    queue_start_steps=cfg.training.prototype_queue_start_steps,
+                )
+                losses["loss"] = losses["loss"] + weights["prototype_loss_weight"] * prototype_losses["prototype_loss"]
+                losses.update({key: value.detach() if key != "prototype_loss" else value for key, value in prototype_losses.items()})
             losses["loss"].backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
@@ -214,6 +240,27 @@ def _resolve_device(name: str) -> torch.device:
     return torch.device(normalized)
 
 
+def _effective_image_encoder_backend(config: StGPTConfig) -> str:
+    return "precomputed" if config.data.image_embedding_store else str(config.model.image_encoder_backend)
+
+
+def _enforce_image_qc_gate(dataset: RegionDataset, config: StGPTConfig) -> None:
+    if not config.data.require_image_qc_pass:
+        return
+    missing = 0
+    for index in range(len(dataset)):
+        evidence = dataset[index]["image_evidence"]
+        has_image = int(evidence.get("source_id", 0)) > 0
+        has_embedding = bool(evidence.get("has_precomputed_embedding", False))
+        if not has_image and not has_embedding:
+            missing += 1
+    if missing:
+        raise ValueError(
+            "data.require_image_qc_pass=True but "
+            f"{missing} regions have neither a readable H&E patch nor a precomputed image embedding."
+        )
+
+
 def _move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
     return {key: value.to(device) if isinstance(value, torch.Tensor) else value for key, value in batch.items()}
 
@@ -263,6 +310,11 @@ def _scheduled_loss_weights(config: StGPTConfig, step: int) -> dict[str, float]:
             step,
             config.training.structure_loss_warmup_steps,
         ),
+        "prototype_loss_weight": _warmup_value(
+            config.training.prototype_loss_weight,
+            step,
+            config.training.prototype_loss_warmup_steps,
+        ),
     }
 
 
@@ -306,6 +358,11 @@ def _evaluate_validation(
                 gene_padding_mask=batch["gene_padding_mask"],
                 cell_expr_values=batch["cell_expr_values"],
                 cell_token_mask=batch["cell_token_mask"],
+                object_image=batch.get("object_image"),
+                context_image=batch.get("context_image"),
+                contour_mask=batch.get("contour_mask"),
+                contour_geometry=batch.get("contour_geometry"),
+                precomputed_image_embedding=batch.get("precomputed_image_embedding"),
             )
             losses = compute_losses(
                 output,
@@ -321,6 +378,25 @@ def _evaluate_validation(
         return {}
     keys = sorted(rows[0])
     return {f"val_{key}": float(np.mean([row[key] for row in rows])) for key in keys}
+
+
+def _make_prototype_tools(
+    config: StGPTConfig,
+    model: ImageGeneSTGPT,
+    device: torch.device,
+) -> tuple[ContourMemoryQueue | None, SinkhornModule | None]:
+    if config.model.n_prototypes <= 0 or config.training.prototype_loss_weight <= 0.0 or model.prototype_head is None:
+        return None, None
+    queue = ContourMemoryQueue(
+        embedding_dim=config.model.d_model,
+        queue_size=config.training.prototype_queue_size,
+    ).to(device)
+    model.add_module("prototype_queue", queue)
+    sinkhorn = SinkhornModule(
+        iterations=config.training.prototype_sinkhorn_iterations,
+        epsilon=config.training.prototype_sinkhorn_epsilon,
+    ).to(device)
+    return queue, sinkhorn
 
 
 def _save_checkpoint(
@@ -350,6 +426,7 @@ def _save_checkpoint(
             "max_cells_per_region": cfg.model.max_cells_per_region,
             "metrics": metrics,
             "model_version": _stgpt_version(),
+            "image_encoder": image_encoder_provenance(cfg),
             "panel_metadata": _panel_metadata(cfg),
             "split_summary": split_summary,
             "training_summary": {
