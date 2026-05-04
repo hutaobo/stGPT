@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from stgpt.config import StGPTConfig
+import pytest
+from pydantic import ValidationError
+
+from stgpt.config import ModelConfig, StGPTConfig
 
 
 def test_config_env_expansion(tmp_path: Path, monkeypatch) -> None:
@@ -38,8 +41,22 @@ training:
     assert cfg.split.strategy == "spatial_block"
     assert cfg.split.train_fraction == 0.70
     assert cfg.model.image_encoder_backend == "cnn"
+    assert cfg.model.image_encoder_preset is None
     assert cfg.data.image_embedding_store is None
     assert not cfg.data.require_image_qc_pass
+
+
+def test_image_encoder_preset_validation() -> None:
+    virchow = ModelConfig(image_encoder_backend="timm", image_encoder_preset="virchow")
+    assert virchow.image_encoder_preset == "virchow"
+    virchow2 = ModelConfig(image_encoder_backend="precomputed", image_encoder_preset="virchow2")
+    assert virchow2.image_encoder_preset == "virchow2"
+
+    with pytest.raises(ValidationError):
+        ModelConfig(image_encoder_backend="cnn", image_encoder_preset="virchow")
+
+    with pytest.raises(ValidationError):
+        ModelConfig(image_encoder_backend="timm", image_encoder_preset="not_a_model")
 
 
 def test_apply_ablation_sets_modalities_and_losses() -> None:

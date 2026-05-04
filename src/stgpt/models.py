@@ -63,21 +63,92 @@ class PatchEncoder(nn.Module):
 
 
 ImageEncoderBackend = Literal["cnn", "timm", "hf", "precomputed"]
+ImageEncoderPreset = Literal["virchow", "virchow2"]
+
+VIRCHOW_MODEL_IDS: dict[str, str] = {
+    "virchow": "hf-hub:paige-ai/Virchow",
+    "virchow2": "hf-hub:paige-ai/Virchow2",
+}
+
+VIRCHOW_PATCH_TOKEN_START: dict[str, int] = {
+    "virchow": 1,
+    "virchow2": 5,
+}
+
+
+@dataclass(frozen=True)
+class ImageEncoderResolvedSpec:
+    backend: str
+    preset: str | None
+    name: str | None
+    image_size: int | None
+    input_mode: str
+    normalization_source: str
+    embedding_strategy: str
+    gated_access: bool
+
+
+def resolve_image_encoder_spec(
+    *,
+    backend: str,
+    name: str | None = None,
+    preset: str | None = None,
+) -> ImageEncoderResolvedSpec:
+    normalized_backend = str(backend)
+    normalized_preset = str(preset).lower() if preset else None
+    if normalized_preset in VIRCHOW_MODEL_IDS:
+        return ImageEncoderResolvedSpec(
+            backend="timm",
+            preset=normalized_preset,
+            name=VIRCHOW_MODEL_IDS[normalized_preset],
+            image_size=224,
+            input_mode="RGB",
+            normalization_source="timm.resolve_data_config(pretrained_cfg)",
+            embedding_strategy="class_token_plus_mean_patch_tokens",
+            gated_access=True,
+        )
+    if normalized_preset is not None:
+        raise ValueError("model.image_encoder_preset must be one of: virchow, virchow2")
+    return ImageEncoderResolvedSpec(
+        backend=normalized_backend,
+        preset=None,
+        name=name,
+        image_size=None,
+        input_mode="RGB",
+        normalization_source="stgpt.load_image_tensor_0_1",
+        embedding_strategy="global_pool_or_mean_tokens",
+        gated_access=False,
+    )
 
 
 class TimmImageEncoder(nn.Module):
     """Frozen timm feature extractor plus a trainable projection into stGPT space."""
 
-    def __init__(self, name: str, d_model: int, *, frozen: bool = True) -> None:
+    def __init__(self, name: str, d_model: int, *, frozen: bool = True, preset: str | None = None) -> None:
         super().__init__()
         try:
             import timm  # type: ignore[import-untyped]
         except Exception as exc:  # pragma: no cover - optional dependency
             raise RuntimeError("Install timm to use model.image_encoder_backend='timm'.") from exc
-        self.name = str(name)
+        spec = resolve_image_encoder_spec(backend="timm", name=name, preset=preset)
+        self.name = str(spec.name)
+        self.preset = spec.preset
+        self.expected_image_size = spec.image_size
         self.frozen = bool(frozen)
-        self.encoder = timm.create_model(self.name, pretrained=True, num_classes=0, global_pool="avg")
+        try:
+            create_kwargs = self._create_kwargs()
+            self.encoder = timm.create_model(self.name, pretrained=True, **create_kwargs)
+        except Exception as exc:  # pragma: no cover - depends on optional remote model access
+            hint = (
+                " Virchow/Virchow2 are gated Hugging Face models; run `huggingface-cli login` "
+                "and accept the model terms before using this preset."
+                if self.preset in VIRCHOW_MODEL_IDS
+                else ""
+            )
+            raise RuntimeError(f"Could not create timm image encoder {self.name!r}.{hint}") from exc
         feature_dim = int(getattr(self.encoder, "num_features", 0) or 0)
+        if self.preset in VIRCHOW_MODEL_IDS and feature_dim > 0:
+            feature_dim *= 2
         self.projection = nn.Sequential(
             nn.Linear(feature_dim, d_model) if feature_dim > 0 else nn.LazyLinear(d_model),
             nn.GELU(),
@@ -87,8 +158,10 @@ class TimmImageEncoder(nn.Module):
             self.encoder.eval()
             for parameter in self.encoder.parameters():
                 parameter.requires_grad_(False)
+        self._register_preprocessing_buffers()
 
     def forward(self, image: Tensor) -> Tensor:
+        image = self._preprocess_image(image)
         if self.frozen:
             self.encoder.eval()
             with torch.no_grad():
@@ -97,9 +170,45 @@ class TimmImageEncoder(nn.Module):
             features = self.encoder(image)
         if isinstance(features, (list, tuple)):
             features = features[0]
+        if self.preset in VIRCHOW_MODEL_IDS and features.ndim == 3:
+            patch_start = VIRCHOW_PATCH_TOKEN_START[str(self.preset)]
+            class_token = features[:, 0]
+            patch_tokens = features[:, patch_start:]
+            features = torch.cat([class_token, patch_tokens.mean(dim=1)], dim=1)
+        elif features.ndim == 3:
+            features = features.mean(dim=1)
         if features.ndim > 2:
             features = features.flatten(start_dim=2).mean(dim=-1)
         return self.projection(features.float())
+
+    def _create_kwargs(self) -> dict[str, Any]:
+        if self.preset in VIRCHOW_MODEL_IDS:
+            try:
+                from timm.layers import SwiGLUPacked  # type: ignore[import-untyped]
+            except Exception as exc:  # pragma: no cover - optional dependency version issue
+                raise RuntimeError("Virchow presets require timm.layers.SwiGLUPacked.") from exc
+            return {"mlp_layer": SwiGLUPacked, "act_layer": torch.nn.SiLU}
+        return {"num_classes": 0, "global_pool": "avg"}
+
+    def _register_preprocessing_buffers(self) -> None:
+        cfg = getattr(self.encoder, "pretrained_cfg", {}) or {}
+        mean = cfg.get("mean", (0.0, 0.0, 0.0))
+        std = cfg.get("std", (1.0, 1.0, 1.0))
+        self.register_buffer("input_mean", torch.tensor(mean, dtype=torch.float32).view(1, -1, 1, 1), persistent=False)
+        self.register_buffer("input_std", torch.tensor(std, dtype=torch.float32).view(1, -1, 1, 1), persistent=False)
+
+    def _preprocess_image(self, image: Tensor) -> Tensor:
+        values = image.float()
+        if self.expected_image_size and tuple(values.shape[-2:]) != (self.expected_image_size, self.expected_image_size):
+            values = F.interpolate(
+                values,
+                size=(self.expected_image_size, self.expected_image_size),
+                mode="bilinear",
+                align_corners=False,
+            )
+        if self.input_mean.shape[1] == values.shape[1]:
+            values = (values - self.input_mean.to(values.device, values.dtype)) / self.input_std.to(values.device, values.dtype)
+        return values
 
 
 class HFImageEncoder(nn.Module):
@@ -151,13 +260,15 @@ def build_image_encoder(
     scales: list[int] | tuple[int, ...] = (1,),
     name: str | None = None,
     frozen: bool = True,
+    preset: str | None = None,
 ) -> nn.Module:
     if backend == "cnn":
         return PatchEncoder(image_channels, d_model, scales=scales)
     if backend == "timm":
-        if not name:
+        spec = resolve_image_encoder_spec(backend=backend, name=name, preset=preset)
+        if not spec.name:
             raise ValueError("model.image_encoder_name is required for image_encoder_backend='timm'.")
-        return TimmImageEncoder(name, d_model, frozen=frozen)
+        return TimmImageEncoder(spec.name, d_model, frozen=frozen, preset=preset)
     if backend == "hf":
         if not name:
             raise ValueError("model.image_encoder_name is required for image_encoder_backend='hf'.")
@@ -171,14 +282,24 @@ def image_encoder_provenance(config: Any) -> dict[str, Any]:
     backend = str(getattr(model, "image_encoder_backend", "cnn"))
     if data is not None and getattr(data, "image_embedding_store", None):
         backend = "precomputed"
+    spec = resolve_image_encoder_spec(
+        backend=backend,
+        name=getattr(model, "image_encoder_name", None),
+        preset=getattr(model, "image_encoder_preset", None),
+    )
     return {
         "backend": backend,
-        "name": getattr(model, "image_encoder_name", None),
+        "preset": spec.preset,
+        "name": spec.name,
         "frozen": bool(getattr(model, "image_encoder_frozen", True)),
         "image_embedding_dim": getattr(model, "image_embedding_dim", None),
-        "image_size": getattr(model, "image_size", None),
+        "image_size": spec.image_size or getattr(model, "image_size", None),
         "image_channels": getattr(model, "image_channels", None),
         "patch_scales": list(getattr(model, "patch_scales", [1])),
+        "input_mode": spec.input_mode,
+        "normalization_source": spec.normalization_source,
+        "embedding_strategy": spec.embedding_strategy,
+        "gated_access": spec.gated_access,
         "image_embedding_store": getattr(data, "image_embedding_store", None) if data is not None else None,
         "stain_normalization": getattr(data, "image_stain_normalization", None) if data is not None else None,
     }
@@ -192,6 +313,7 @@ class ContourEvidenceEncoder(nn.Module):
         *,
         scales: list[int] | tuple[int, ...] = (1,),
         image_encoder_backend: ImageEncoderBackend = "cnn",
+        image_encoder_preset: ImageEncoderPreset | None = None,
         image_encoder_name: str | None = None,
         image_encoder_frozen: bool = True,
         image_embedding_dim: int | None = None,
@@ -210,6 +332,7 @@ class ContourEvidenceEncoder(nn.Module):
                 scales=scales,
                 name=image_encoder_name,
                 frozen=image_encoder_frozen,
+                preset=image_encoder_preset,
             )
             self.context_encoder = build_image_encoder(
                 backend=image_encoder_backend,
@@ -218,6 +341,7 @@ class ContourEvidenceEncoder(nn.Module):
                 scales=scales,
                 name=image_encoder_name,
                 frozen=image_encoder_frozen,
+                preset=image_encoder_preset,
             )
         self.precomputed_projection = (
             self._precomputed_projection(image_embedding_dim, d_model)
@@ -340,6 +464,7 @@ class ImageGeneSTGPT(nn.Module):
         image_channels: int = 3,
         patch_scales: list[int] | tuple[int, ...] = (1,),
         image_encoder_backend: ImageEncoderBackend = "cnn",
+        image_encoder_preset: ImageEncoderPreset | None = None,
         image_encoder_name: str | None = None,
         image_encoder_frozen: bool = True,
         image_embedding_dim: int | None = None,
@@ -366,6 +491,7 @@ class ImageGeneSTGPT(nn.Module):
         self.use_structure_context = bool(use_structure_context)
         self.use_cell_context = bool(use_cell_context)
         self.image_encoder_backend = str(image_encoder_backend)
+        self.image_encoder_preset = image_encoder_preset
         self.image_encoder_name = image_encoder_name
         self.image_encoder_frozen = bool(image_encoder_frozen)
         self.image_embedding_dim = image_embedding_dim
@@ -378,6 +504,7 @@ class ImageGeneSTGPT(nn.Module):
             d_model,
             scales=patch_scales,
             image_encoder_backend=image_encoder_backend,
+            image_encoder_preset=image_encoder_preset,
             image_encoder_name=image_encoder_name,
             image_encoder_frozen=image_encoder_frozen,
             image_embedding_dim=image_embedding_dim,
@@ -457,6 +584,7 @@ class ImageGeneSTGPT(nn.Module):
             image_channels=cfg.model.image_channels,
             patch_scales=cfg.model.patch_scales,
             image_encoder_backend="precomputed" if cfg.data.image_embedding_store else cfg.model.image_encoder_backend,
+            image_encoder_preset=cfg.model.image_encoder_preset,
             image_encoder_name=cfg.model.image_encoder_name,
             image_encoder_frozen=cfg.model.image_encoder_frozen,
             image_embedding_dim=cfg.model.image_embedding_dim,

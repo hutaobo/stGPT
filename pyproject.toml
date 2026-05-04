@@ -41,7 +41,7 @@ dependencies = [
 [project.optional-dependencies]
 xenium = ["pyXenium>=0.4.1"]
 spatho = ["spatho>=0.1.0"]
-image = ["timm>=1.0", "transformers>=4.40"]
+image = ["timm>=1.0", "transformers>=4.40", "huggingface_hub>=0.24", "safetensors>=0.4"]
 dev = [
     "pytest>=8,<9",
     "ruff>=0.8",

@@ -104,6 +104,7 @@ def precompute_images_command(
     output: Annotated[Path, typer.Option("--output", "-o")],
     encoder: Annotated[str | None, typer.Option("--encoder")] = None,
     encoder_backend: Annotated[str | None, typer.Option("--encoder-backend")] = None,
+    encoder_preset: Annotated[str | None, typer.Option("--encoder-preset")] = None,
     batch_size: Annotated[int, typer.Option("--batch-size", min=1)] = 32,
     device: Annotated[str, typer.Option("--device")] = "auto",
 ) -> None:
@@ -111,6 +112,7 @@ def precompute_images_command(
         config,
         output=output,
         encoder_backend=encoder_backend,
+        encoder_preset=encoder_preset,
         encoder_name=encoder,
         batch_size=batch_size,
         device=device,

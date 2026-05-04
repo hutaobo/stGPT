@@ -17,14 +17,21 @@ from stgpt.config import DataConfig, ModelConfig, StGPTConfig, TrainingConfig
 from stgpt.data import ImageGeneDataset, build_training_case, make_synthetic_case
 from stgpt.image_qc import inspect_images, precompute_image_embeddings
 from stgpt.images import write_synthetic_patch
-from stgpt.models import ContourEvidenceEncoder, ImageGeneSTGPT
+from stgpt.models import ContourEvidenceEncoder, ImageGeneSTGPT, resolve_image_encoder_spec
 from stgpt.training import train
 
 
-def _write_synthetic_config(tmp_path: Path, *, image_embedding_store: Path | None = None) -> Path:
+def _write_synthetic_config(
+    tmp_path: Path,
+    *,
+    image_embedding_store: Path | None = None,
+    image_encoder_backend: str = "cnn",
+    image_encoder_preset: str | None = None,
+) -> Path:
     tmp_path.mkdir(parents=True, exist_ok=True)
     config = tmp_path / "image.yaml"
     store_line = f"  image_embedding_store: {image_embedding_store.as_posix()}\n" if image_embedding_store else ""
+    preset_line = f"  image_encoder_preset: {image_encoder_preset}\n" if image_encoder_preset else ""
     config.write_text(
         f"""
 case_name: image_case
@@ -42,7 +49,8 @@ data:
   max_genes: 12
   n_expression_bins: 8
   image_size: 32
-  image_encoder_backend: cnn
+  image_encoder_backend: {image_encoder_backend}
+{preset_line}  image_embedding_dim: 32
 training:
   batch_size: 4
   max_steps: 1
@@ -112,6 +120,52 @@ def test_mocked_timm_and_hf_image_encoder_backends(monkeypatch) -> None:
     assert hf_emb.shape == (2, 16)
 
 
+def test_virchow_preset_uses_paige_timm_kwargs(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeTimm(torch.nn.Module):
+        num_features = 7
+
+        def forward(self, image):
+            return torch.ones(image.shape[0], 257, self.num_features, device=image.device)
+
+    class FakeSwiGLUPacked:
+        pass
+
+    timm = types.ModuleType("timm")
+
+    def create_model(name, **kwargs):
+        calls.append({"name": name, **kwargs})
+        return FakeTimm()
+
+    timm.create_model = create_model
+    timm_layers = types.ModuleType("timm.layers")
+    timm_layers.SwiGLUPacked = FakeSwiGLUPacked
+    monkeypatch.setitem(sys.modules, "timm", timm)
+    monkeypatch.setitem(sys.modules, "timm.layers", timm_layers)
+
+    encoder = ContourEvidenceEncoder(
+        3,
+        16,
+        image_encoder_backend="timm",
+        image_encoder_preset="virchow",
+    )
+    _, embedding = encoder(object_image=torch.rand(2, 3, 224, 224))
+
+    assert embedding.shape == (2, 16)
+    assert calls[0]["name"] == "hf-hub:paige-ai/Virchow"
+    assert calls[0]["mlp_layer"] is FakeSwiGLUPacked
+    assert calls[0]["act_layer"] is torch.nn.SiLU
+    assert "num_classes" not in calls[0]
+
+
+def test_virchow2_preset_skips_register_tokens() -> None:
+    spec = resolve_image_encoder_spec(backend="timm", preset="virchow2")
+    assert spec.name == "hf-hub:paige-ai/Virchow2"
+    assert spec.embedding_strategy == "class_token_plus_mean_patch_tokens"
+    assert spec.gated_access
+
+
 def test_image_qc_reports_valid_and_missing_patches(tmp_path: Path) -> None:
     patch = write_synthetic_patch(tmp_path / "patch.png", image_size=32, structure_id=1, intensity=0.6, seed=1)
     missing = tmp_path / "missing.png"
@@ -156,10 +210,55 @@ def test_precompute_images_and_training_with_store(tmp_path: Path) -> None:
     assert summary["embedding_dim"] == 32
     assert store.exists()
 
-    train_config = _write_synthetic_config(tmp_path / "with_store", image_embedding_store=store)
+    train_config = _write_synthetic_config(
+        tmp_path / "with_store",
+        image_embedding_store=store,
+        image_encoder_backend="precomputed",
+        image_encoder_preset="virchow",
+    )
     result = train(train_config, preset="smoke", max_steps=1)
     payload = torch.load(result["checkpoint"], map_location="cpu")
     assert payload["image_encoder"]["backend"] == "precomputed"
+    assert payload["image_encoder"]["preset"] == "virchow"
+    assert payload["image_encoder"]["name"] == "hf-hub:paige-ai/Virchow"
+    assert payload["image_encoder"]["normalization_source"] == "timm.resolve_data_config(pretrained_cfg)"
+
+
+def test_precompute_images_with_mocked_virchow_preset(tmp_path: Path, monkeypatch) -> None:
+    class FakeTimm(torch.nn.Module):
+        num_features = 7
+
+        def forward(self, image):
+            return torch.ones(image.shape[0], 257, self.num_features, device=image.device)
+
+    class FakeSwiGLUPacked:
+        pass
+
+    timm = types.ModuleType("timm")
+    timm.create_model = lambda *args, **kwargs: FakeTimm()
+    timm_layers = types.ModuleType("timm.layers")
+    timm_layers.SwiGLUPacked = FakeSwiGLUPacked
+    monkeypatch.setitem(sys.modules, "timm", timm)
+    monkeypatch.setitem(sys.modules, "timm.layers", timm_layers)
+
+    config_path = _write_synthetic_config(tmp_path)
+    store = tmp_path / "virchow_embeddings.parquet"
+    summary = precompute_image_embeddings(
+        config_path,
+        output=store,
+        encoder_backend="timm",
+        encoder_preset="virchow",
+        batch_size=4,
+        device="cpu",
+    )
+    manifest = pd.read_csv(tmp_path / "image_embedding_manifest.csv")
+
+    assert summary["encoder_preset"] == "virchow"
+    assert summary["encoder_name"] == "hf-hub:paige-ai/Virchow"
+    assert summary["normalization_source"] == "timm.resolve_data_config(pretrained_cfg)"
+    assert store.exists()
+    assert manifest["encoder_preset"].iloc[0] == "virchow"
+    assert bool(manifest["gated_access"].iloc[0])
 
 
 def test_cli_inspect_and_precompute_images(tmp_path: Path) -> None:

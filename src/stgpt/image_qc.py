@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 
 from .config import StGPTConfig
 from .data import RegionDataset, build_training_case
-from .models import ContourEvidenceEncoder
+from .models import ContourEvidenceEncoder, resolve_image_encoder_spec
 
 
 def inspect_images(
@@ -55,6 +55,7 @@ def precompute_image_embeddings(
     *,
     output: str | Path,
     encoder_backend: str | None = None,
+    encoder_preset: str | None = None,
     encoder_name: str | None = None,
     batch_size: int = 32,
     device: str = "auto",
@@ -62,16 +63,24 @@ def precompute_image_embeddings(
     """Precompute contour H&E embeddings from object/context/mask evidence."""
     cfg = StGPTConfig.from_file(config) if isinstance(config, (str, Path)) else config
     dataset = RegionDataset(build_training_case(cfg), cfg, for_inference=True)
-    backend = str(encoder_backend or cfg.model.image_encoder_backend)
+    preset = encoder_preset if encoder_preset is not None else cfg.model.image_encoder_preset
+    backend = str(encoder_backend or ("timm" if preset else cfg.model.image_encoder_backend))
     if backend == "precomputed":
         raise ValueError("precompute-images needs a live image encoder backend, not 'precomputed'.")
-    name = encoder_name if encoder_name is not None else cfg.model.image_encoder_name
+    spec = resolve_image_encoder_spec(
+        backend=backend,
+        name=encoder_name if encoder_name is not None else cfg.model.image_encoder_name,
+        preset=preset,
+    )
+    backend = spec.backend
+    name = spec.name
     target = _resolve_device(device)
     encoder = ContourEvidenceEncoder(
         cfg.model.image_channels,
         cfg.model.d_model,
         scales=cfg.model.patch_scales,
         image_encoder_backend=backend,  # type: ignore[arg-type]
+        image_encoder_preset=preset,  # type: ignore[arg-type]
         image_encoder_name=name,
         image_encoder_frozen=cfg.model.image_encoder_frozen,
         image_embedding_dim=cfg.model.image_embedding_dim,
@@ -99,9 +108,15 @@ def precompute_image_embeddings(
     frame.insert(0, "image_source", image_sources)
     frame.insert(0, "region_id", region_ids)
     frame["encoder_backend"] = backend
+    frame["encoder_preset"] = preset
     frame["encoder_name"] = name
     frame["encoder_frozen"] = bool(cfg.model.image_encoder_frozen)
     frame["image_embedding_dim"] = int(matrix.shape[1])
+    frame["image_size"] = spec.image_size or cfg.model.image_size
+    frame["input_mode"] = spec.input_mode
+    frame["normalization_source"] = spec.normalization_source
+    frame["embedding_strategy"] = spec.embedding_strategy
+    frame["gated_access"] = spec.gated_access
 
     output_path = Path(output)
     if output_path.suffix.lower() != ".parquet":
@@ -119,7 +134,9 @@ def precompute_image_embeddings(
         "n_regions": int(len(frame)),
         "embedding_dim": int(matrix.shape[1]),
         "encoder_backend": backend,
+        "encoder_preset": preset,
         "encoder_name": name,
+        "normalization_source": spec.normalization_source,
         "store": str(store_path),
         "manifest": str(manifest_path),
     }
@@ -209,9 +226,15 @@ def _embedding_manifest(frame: pd.DataFrame, store_path: Path, config: StGPTConf
                 "case_name": config.case_name,
                 "store": str(store_path),
                 "encoder_backend": backend,
-                "encoder_name": config.model.image_encoder_name,
+                "encoder_preset": group["encoder_preset"].iloc[0] if "encoder_preset" in group and not group.empty else None,
+                "encoder_name": group["encoder_name"].iloc[0] if "encoder_name" in group and not group.empty else config.model.image_encoder_name,
                 "n_regions": int(len(group)),
                 "embedding_dim": int(group["image_embedding_dim"].iloc[0]) if not group.empty else 0,
+                "image_size": int(group["image_size"].iloc[0]) if "image_size" in group and not group.empty else config.model.image_size,
+                "input_mode": group["input_mode"].iloc[0] if "input_mode" in group and not group.empty else "RGB",
+                "normalization_source": group["normalization_source"].iloc[0] if "normalization_source" in group and not group.empty else None,
+                "embedding_strategy": group["embedding_strategy"].iloc[0] if "embedding_strategy" in group and not group.empty else None,
+                "gated_access": bool(group["gated_access"].iloc[0]) if "gated_access" in group and not group.empty else False,
                 "uses_object_context_mask_geometry": True,
             }
         )

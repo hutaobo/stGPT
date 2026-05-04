@@ -169,6 +169,7 @@ stGPT consumes contour H&E assets built by pyXenium/spatho. It can train with th
 ```yaml
 model:
   image_encoder_backend: cnn       # cnn | timm | hf | precomputed
+  image_encoder_preset: null       # null | virchow | virchow2
   image_encoder_name: null         # e.g. a timm or Hugging Face model id
   image_encoder_frozen: true
   image_embedding_dim: null
@@ -182,10 +183,11 @@ Recommended real-run flow:
 
 ```bash
 stgpt inspect-images --config configs\l3_case.yaml --output outputs\l3_case\image_qc
-stgpt precompute-images --config configs\l3_case.yaml --encoder-backend hf --encoder <model-id> --output outputs\l3_case\image_embeddings.parquet --device cuda
+stgpt precompute-images --config configs\l3_case.yaml --encoder-backend timm --encoder-preset virchow --output outputs\l3_case\image_embeddings.parquet --device cuda
 ```
 
 Set `data.image_embedding_store` to the resulting parquet file before training to avoid repeated GPU image encoding. `inspect-images` writes `image_qc_summary.csv/json`; `precompute-images` writes `image_embeddings.parquet` and `image_embedding_manifest.csv`.
+Virchow and Virchow2 are optional gated Hugging Face models; accept Paige's model terms and run `huggingface-cli login` in the training environment before precomputing embeddings. The smoke/default backend remains `cnn`.
 
 ## Smoke Training
 

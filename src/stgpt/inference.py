@@ -123,6 +123,7 @@ def _embed_dataset_outputs(
         image_channels=cfg.model.image_channels,
         patch_scales=cfg.model.patch_scales,
         image_encoder_backend="precomputed" if cfg.data.image_embedding_store else cfg.model.image_encoder_backend,
+        image_encoder_preset=cfg.model.image_encoder_preset,
         image_encoder_name=cfg.model.image_encoder_name,
         image_encoder_frozen=cfg.model.image_encoder_frozen,
         image_embedding_dim=cfg.model.image_embedding_dim or dataset.image_embedding_dim or None,

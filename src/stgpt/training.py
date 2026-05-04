@@ -76,6 +76,7 @@ def train(
         image_channels=cfg.model.image_channels,
         patch_scales=cfg.model.patch_scales,
         image_encoder_backend=_effective_image_encoder_backend(cfg),
+        image_encoder_preset=cfg.model.image_encoder_preset,
         image_encoder_name=cfg.model.image_encoder_name,
         image_encoder_frozen=cfg.model.image_encoder_frozen,
         image_embedding_dim=cfg.model.image_embedding_dim or dataset.image_embedding_dim or None,

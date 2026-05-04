@@ -9,6 +9,7 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 AblationMode = Literal["full", "gene_only", "image_only", "spatial_only", "image_gene", "image_gene_spatial"]
+ImageEncoderPreset = Literal["virchow", "virchow2"]
 
 
 def _expand_env(value: Any) -> Any:
@@ -104,6 +105,7 @@ class ModelConfig(BaseModel):
     image_size: int = Field(default=224, ge=16)
     image_channels: int = Field(default=3, ge=1)
     image_encoder_backend: Literal["cnn", "timm", "hf", "precomputed"] = "cnn"
+    image_encoder_preset: ImageEncoderPreset | None = None
     image_encoder_name: str | None = None
     image_encoder_frozen: bool = True
     image_embedding_dim: int | None = Field(default=None, ge=1)
@@ -134,6 +136,12 @@ class ModelConfig(BaseModel):
         if any(scale < 1 for scale in scales):
             raise ValueError("model.patch_scales values must be positive integers")
         return scales
+
+    @model_validator(mode="after")
+    def _validate_image_encoder_preset(self) -> ModelConfig:
+        if self.image_encoder_preset is not None and self.image_encoder_backend not in {"timm", "precomputed"}:
+            raise ValueError("model.image_encoder_preset requires image_encoder_backend='timm' or 'precomputed'.")
+        return self
 
 
 class TrainingConfig(BaseModel):
