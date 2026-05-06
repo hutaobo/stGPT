@@ -99,6 +99,8 @@ def train(
     metrics: list[dict[str, float]] = []
     best_metric = float("inf")
     best_checkpoint_path = checkpoint_dir / "best.pt"
+    best_alignment_metric = float("inf")
+    best_alignment_checkpoint_path = checkpoint_dir / "best_alignment.pt"
     step = 0
     model.train()
     while step < cfg.training.max_steps:
@@ -171,6 +173,21 @@ def train(
                             best_metric=best_metric,
                             split_summary=_split_summary(splits),
                         )
+                    val_alignment = val_metrics.get("val_image_gene_loss")
+                    if val_alignment is not None and val_alignment < best_alignment_metric:
+                        best_alignment_metric = val_alignment
+                        _save_checkpoint(
+                            best_alignment_checkpoint_path,
+                            model=model,
+                            optimizer=optimizer,
+                            scheduler=scheduler,
+                            cfg=cfg,
+                            dataset=dataset,
+                            metrics=metrics + [metric_row],
+                            step=step,
+                            best_metric=best_alignment_metric,
+                            split_summary=_split_summary(splits),
+                        )
 
             metrics.append(metric_row)
             if cfg.training.save_every_n_steps and step % int(cfg.training.save_every_n_steps) == 0:
@@ -219,6 +236,7 @@ def train(
     return {
         "checkpoint": str(checkpoint_path),
         "best_checkpoint": str(best_checkpoint_path),
+        "best_alignment_checkpoint": str(best_alignment_checkpoint_path),
         "metrics": metrics,
         "metrics_path": str(metrics_path),
         "steps": step,
