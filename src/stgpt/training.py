@@ -76,8 +76,8 @@ def train(
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     metrics: list[dict[str, float]] = []
     best_metric = float("inf")
-    best_alignment_metric = float("-inf")
     best_checkpoint_path = checkpoint_dir / "best.pt"
+    best_alignment_metric = float("inf")
     best_alignment_checkpoint_path = checkpoint_dir / "best_alignment.pt"
     step = 0
     if resume is not None:
@@ -160,9 +160,9 @@ def train(
                             best_alignment_metric=best_alignment_metric,
                             split_summary=_split_summary(splits),
                         )
-                    alignment_score = val_metrics.get("val_alignment_score")
-                    if alignment_score is not None and alignment_score > best_alignment_metric:
-                        best_alignment_metric = float(alignment_score)
+                    val_alignment = val_metrics.get("val_image_gene_loss")
+                    if val_alignment is not None and val_alignment < best_alignment_metric:
+                        best_alignment_metric = val_alignment
                         _save_checkpoint(
                             best_alignment_checkpoint_path,
                             model=model,
@@ -622,9 +622,9 @@ def _best_loss_from_metrics(metrics: list[dict[str, float]]) -> float:
 
 
 def _best_alignment_from_metrics(metrics: list[dict[str, float]]) -> float:
-    values = [_safe_float(row.get("val_alignment_score"), default=float("nan")) for row in metrics]
+    values = [_safe_float(row.get("val_image_gene_loss"), default=float("nan")) for row in metrics]
     values = [value for value in values if math.isfinite(value)]
-    return max(values) if values else float("nan")
+    return min(values) if values else float("inf")
 
 
 def _safe_float(value: Any, *, default: float) -> float:

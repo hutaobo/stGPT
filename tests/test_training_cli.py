@@ -151,3 +151,48 @@ training:
     state = checkpoint["model_state"]
     assert "prototype_queue.queue" in state
     assert int(state["prototype_queue.queue_filled"]) > 0
+
+
+def test_train_best_alignment_checkpoint(tmp_path: Path) -> None:
+    config = tmp_path / "alignment.yaml"
+    config.write_text(
+        f"""
+case_name: alignment_smoke
+data:
+  mode: synthetic
+  output_dir: {tmp_path.as_posix()}/case_align
+  n_cells: 20
+  n_genes: 20
+  n_structures: 2
+  image_size: 32
+model:
+  d_model: 32
+  n_heads: 4
+  n_layers: 1
+  max_genes: 12
+  n_expression_bins: 8
+  image_size: 32
+training:
+  batch_size: 4
+  learning_rate: 0.001
+  max_steps: 2
+  save_every_n_steps: 1
+  image_gene_loss_weight: 0.1
+  output_dir: {tmp_path.as_posix()}/train_align
+  device: cpu
+  num_workers: 0
+split:
+  strategy: spatial_block
+  train_fraction: 0.70
+  val_fraction: 0.15
+  test_fraction: 0.15
+""",
+        encoding="utf-8",
+    )
+    result = train(config, preset="smoke", max_steps=2)
+    assert "best_alignment_checkpoint" in result
+    alignment_path = Path(result["best_alignment_checkpoint"])
+    assert alignment_path.exists(), "best_alignment.pt should be saved when val_image_gene_loss is tracked"
+    payload = torch.load(alignment_path, map_location="cpu")
+    assert "model_state" in payload
+    assert "config" in payload
