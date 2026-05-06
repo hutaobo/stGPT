@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import time
 from pathlib import Path
 from typing import Annotated
 
@@ -14,6 +15,14 @@ from .config import StGPTConfig
 from .contour_store import pack_contour_patches
 from .data import build_training_manifest
 from .evaluation import evaluate as evaluate_model
+from .evidence import (
+    build_failure_gallery,
+    build_latent_manifold,
+    check_artifact_contract,
+    generate_watchtower_report,
+    run_contour_ablation,
+    summarize_evidence_suite,
+)
 from .foundation import package_model as package_model_backend
 from .image_qc import inspect_images as inspect_images_backend
 from .image_qc import precompute_image_embeddings
@@ -21,7 +30,9 @@ from .inference import embed_anndata, write_embeddings_table
 from .inspection import inspect_registry as inspect_registry_backend
 from .qc import validate_data
 from .spatho import run_spatho_export
+from .training import initialize_random_checkpoint
 from .training import train as train_model
+from .visual import build_contour_panel
 
 app = typer.Typer(help="stGPT image-gene spatial transcriptomics prototype.")
 DEFAULT_EMBED_OUTPUT = Path("outputs/stgpt_embeddings.parquet")
@@ -126,12 +137,25 @@ def train(
     preset: Annotated[str | None, typer.Option("--preset")] = None,
     max_steps: Annotated[int | None, typer.Option("--max-steps")] = None,
     ablation: Annotated[str | None, typer.Option("--ablation")] = None,
+    resume: Annotated[Path | None, typer.Option("--resume", exists=True)] = None,
 ) -> None:
-    result = train_model(config, preset=preset, max_steps=max_steps, ablation=ablation)
+    result = train_model(config, preset=preset, max_steps=max_steps, ablation=ablation, resume=resume)
     printable = {key: value for key, value in result.items() if key != "metrics"}
     if result.get("metrics"):
         printable["last_metrics"] = result["metrics"][-1]
     typer.echo(json.dumps(printable, indent=2))
+
+
+@app.command("init-random-checkpoint")
+def init_random_checkpoint_command(
+    config: Annotated[Path, typer.Option("--config", "-c", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    preset: Annotated[str | None, typer.Option("--preset")] = None,
+    ablation: Annotated[str | None, typer.Option("--ablation")] = None,
+    seed: Annotated[int | None, typer.Option("--seed")] = None,
+) -> None:
+    result = initialize_random_checkpoint(config, output, preset=preset, ablation=ablation, seed=seed)
+    typer.echo(json.dumps(result, indent=2))
 
 
 @app.command()
@@ -151,6 +175,116 @@ def evaluate(
         batch_size=batch_size,
         device=device,
     )
+    typer.echo(json.dumps(result, indent=2))
+
+
+@app.command("evidence-summary")
+def evidence_summary_command(
+    suite: Annotated[Path, typer.Option("--suite", "-s", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    pointer_sample_size: Annotated[int, typer.Option("--pointer-sample-size", min=0)] = 50,
+) -> None:
+    result = summarize_evidence_suite(suite, output, pointer_sample_size=pointer_sample_size)
+    typer.echo(json.dumps(result, indent=2))
+
+
+@app.command("watchtower")
+def watchtower_command(
+    suite: Annotated[Path, typer.Option("--suite", "-s", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    watch: Annotated[bool, typer.Option("--watch")] = False,
+    interval_seconds: Annotated[int, typer.Option("--interval-seconds", min=1)] = 3600,
+    iterations: Annotated[int | None, typer.Option("--iterations", min=1)] = None,
+) -> None:
+    count = 0
+    last_result: dict[str, object] | None = None
+    while True:
+        last_result = generate_watchtower_report(suite, output)
+        count += 1
+        if not watch or (iterations is not None and count >= iterations):
+            break
+        time.sleep(interval_seconds)
+    typer.echo(json.dumps(last_result or {}, indent=2))
+
+
+@app.command("contour-panel")
+def contour_panel_command(
+    evidence_chain: Annotated[Path, typer.Option("--evidence-chain", "-e", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    sample_size: Annotated[int, typer.Option("--sample-size", min=0)] = 12,
+    sort_by: Annotated[str, typer.Option("--sort-by")] = "low_confidence",
+    top_genes: Annotated[int, typer.Option("--top-genes", min=0)] = 8,
+) -> None:
+    result = build_contour_panel(evidence_chain, output, sample_size=sample_size, sort_by=sort_by, top_genes=top_genes)
+    typer.echo(json.dumps(result, indent=2))
+
+
+@app.command("failure-gallery")
+def failure_gallery_command(
+    run_dir: Annotated[Path, typer.Option("--run-dir", "-r", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    max_items: Annotated[int, typer.Option("--max-items", min=0)] = 24,
+    top_genes: Annotated[int, typer.Option("--top-genes", min=0)] = 8,
+    rare_prototype_fraction: Annotated[float, typer.Option("--rare-prototype-fraction", min=0.0)] = 0.02,
+) -> None:
+    result = build_failure_gallery(
+        run_dir,
+        output,
+        max_items=max_items,
+        top_genes=top_genes,
+        rare_prototype_fraction=rare_prototype_fraction,
+    )
+    typer.echo(json.dumps(result, indent=2))
+
+
+@app.command("ablate")
+def ablate_command(
+    checkpoint: Annotated[Path, typer.Option("--checkpoint", "-k", exists=True)],
+    config: Annotated[Path, typer.Option("--config", "-c", exists=True)],
+    targets: Annotated[Path, typer.Option("--targets", "-t", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    batch_size: Annotated[int, typer.Option("--batch-size", min=1)] = 32,
+    device: Annotated[str, typer.Option("--device")] = "auto",
+) -> None:
+    result = run_contour_ablation(
+        checkpoint=checkpoint,
+        config=config,
+        targets=targets,
+        output_dir=output,
+        batch_size=batch_size,
+        device=device,
+    )
+    typer.echo(json.dumps(result, indent=2))
+
+
+@app.command("latent-manifold")
+def latent_manifold_command(
+    suite: Annotated[Path, typer.Option("--suite", "-s", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    reducer: Annotated[str, typer.Option("--reducer")] = "auto",
+    max_points_per_run: Annotated[int, typer.Option("--max-points-per-run", min=0)] = 0,
+    max_html_points: Annotated[int, typer.Option("--max-html-points", min=0)] = 5000,
+    seed: Annotated[int, typer.Option("--seed")] = 0,
+) -> None:
+    result = build_latent_manifold(
+        suite,
+        output,
+        reducer=reducer,  # type: ignore[arg-type]
+        max_points_per_run=max_points_per_run,
+        max_html_points=max_html_points,
+        seed=seed,
+    )
+    typer.echo(json.dumps(result, indent=2))
+
+
+@app.command("check-contract")
+def check_contract_command(
+    checkpoint: Annotated[Path, typer.Option("--checkpoint", "-k", exists=True)],
+    config: Annotated[Path, typer.Option("--config", "-c", exists=True)],
+    run_dir: Annotated[Path | None, typer.Option("--run-dir", "-r")] = None,
+    output: Annotated[Path | None, typer.Option("--output", "-o")] = None,
+) -> None:
+    result = check_artifact_contract(checkpoint=checkpoint, config=config, run_dir=run_dir, output=output)
     typer.echo(json.dumps(result, indent=2))
 
 

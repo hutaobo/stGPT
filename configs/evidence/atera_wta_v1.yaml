@@ -1,0 +1,90 @@
+suite_name: atera_wta_v1
+runs:
+  - run_id: breast_gene_spatial
+    tissue: breast
+    condition: Gene-only baseline
+    config_path: configs/pilots/atera_wta_v1/breast_gene_spatial.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1/breast_gene_spatial
+    expected_image_source: image_path
+    expected_prototypes: 0
+  - run_id: breast_full_m6_png
+    tissue: breast
+    condition: Full M6 PNG fallback
+    config_path: configs/pilots/atera_wta_v1/breast_full_m6.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1/breast_full_m6
+    expected_image_source: image_path
+    expected_prototypes: 64
+  - run_id: breast_full_m6_contour_store
+    tissue: breast
+    condition: Full M6 Zarr contour store
+    config_path: configs/pilots/atera_wta_v1/breast_full_m6_contour_store.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1/breast_full_m6_contour_store
+    expected_image_source: contour_store
+    expected_prototypes: 32
+  - run_id: breast_gene_spatial_500_contour_unit
+    tissue: breast
+    condition: Contour-unit Gene+Spatial 500-step
+    config_path: configs/pilots/atera_wta_v1/breast_gene_spatial_500_contour_unit.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1/breast_gene_spatial_500_contour_unit
+    expected_image_source: contour_store
+    expected_prototypes: 0
+  - run_id: breast_full_m6_contour_store_random_init
+    tissue: breast
+    condition: Full M6 contour-store random init
+    config_path: configs/pilots/atera_wta_v1/breast_full_m6_contour_store_random_init.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1/breast_full_m6_contour_store_random_init
+    expected_image_source: contour_store
+    expected_prototypes: 32
+    requires_training_metrics: false
+  - run_id: cervical_to_breast_full_m6_zero_shot
+    tissue: breast
+    condition: Zero-shot Cervical→Breast Full M6
+    config_path: configs/pilots/atera_wta_v1/breast_full_m6_contour_store.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1/cross_tissue/cervical_to_breast_full_m6
+    expected_image_source: contour_store
+    expected_prototypes: 32
+    requires_training_metrics: false
+  - run_id: cervical_gene_spatial
+    tissue: cervical
+    condition: Gene-only baseline
+    config_path: configs/pilots/atera_wta_v1/cervical_gene_spatial.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1/cervical_gene_spatial
+    expected_image_source: image_path
+    expected_prototypes: 0
+  - run_id: cervical_full_m6_png
+    tissue: cervical
+    condition: Full M6 PNG fallback
+    config_path: configs/pilots/atera_wta_v1/cervical_full_m6.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1/cervical_full_m6
+    expected_image_source: image_path
+    expected_prototypes: 64
+  - run_id: cervical_full_m6_contour_store
+    tissue: cervical
+    condition: Full M6 Zarr contour store
+    config_path: configs/pilots/atera_wta_v1/cervical_full_m6_contour_store.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1/cervical_full_m6_contour_store
+    expected_image_source: contour_store
+    expected_prototypes: 32
+  - run_id: cervical_gene_spatial_500_contour_unit
+    tissue: cervical
+    condition: Contour-unit Gene+Spatial 500-step
+    config_path: configs/pilots/atera_wta_v1/cervical_gene_spatial_500_contour_unit.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1/cervical_gene_spatial_500_contour_unit
+    expected_image_source: contour_store
+    expected_prototypes: 0
+  - run_id: cervical_full_m6_contour_store_random_init
+    tissue: cervical
+    condition: Full M6 contour-store random init
+    config_path: configs/pilots/atera_wta_v1/cervical_full_m6_contour_store_random_init.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1/cervical_full_m6_contour_store_random_init
+    expected_image_source: contour_store
+    expected_prototypes: 32
+    requires_training_metrics: false
+  - run_id: breast_to_cervical_full_m6_zero_shot
+    tissue: cervical
+    condition: Zero-shot Breast→Cervical Full M6
+    config_path: configs/pilots/atera_wta_v1/cervical_full_m6_contour_store.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1/cross_tissue/breast_to_cervical_full_m6
+    expected_image_source: contour_store
+    expected_prototypes: 32
+    requires_training_metrics: false

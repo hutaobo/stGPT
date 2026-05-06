@@ -1,0 +1,61 @@
+case_name: atera_wta_cervical_full_m6_lambda_0_05
+data:
+  mode: xenium_slide
+  output_dir: D:/GitHub/stGPT/outputs/pilot_runs/atera_wta_v1_long_run/cervical_full_m6_lambda_0_05/case
+  slide_store: D:/GitHub/stGPT/outputs/xenium_slides/WTA_Preview_FFPE_Cervical_Cancer_outs/xenium_slide.zarr
+  patch_manifest: D:/GitHub/stGPT/outputs/xenium_slides/WTA_Preview_FFPE_Cervical_Cancer_outs/contour_patches_manifest.json
+  contour_image_store: D:/GitHub/stGPT/outputs/xenium_slides/WTA_Preview_FFPE_Cervical_Cancer_outs/contour_image_store.zarr
+  contour_manifest: D:/GitHub/stGPT/outputs/xenium_slides/WTA_Preview_FFPE_Cervical_Cancer_outs/contour_image_manifest.parquet
+  structure_assignments_csv: D:/GitHub/stGPT/outputs/xenium_slides/WTA_Preview_FFPE_Cervical_Cancer_outs/structure_assignments.csv
+  slide_id: WTA_Preview_FFPE_Cervical_Cancer_outs
+  organ: Cervical
+  batch_id: Atera_WTA
+  stain: H&E
+  min_cells_per_region: 1
+  include_structure_context: false
+model:
+  d_model: 64
+  n_heads: 4
+  n_layers: 2
+  dim_feedforward: 128
+  max_genes: 256
+  n_expression_bins: 32
+  image_size: 64
+  max_cells_per_region: 16
+  n_prototypes: 32
+  prototype_temperature: 0.1
+  use_expression_values: true
+  use_image_context: true
+  use_spatial_context: true
+  use_structure_context: false
+  use_cell_context: true
+training:
+  batch_size: 32
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  max_steps: 10000
+  warmup_steps: 500
+  lr_schedule: cosine
+  save_every_n_steps: 500
+  alignment_telemetry_every_n_steps: 250
+  mask_probability: 0.15
+  neighborhood_k: 8
+  image_gene_loss_weight: 0.05
+  neighborhood_loss_weight: 0.25
+  structure_loss_weight: 0.0
+  prototype_loss_weight: 0.1
+  image_gene_loss_warmup_steps: 1000
+  prototype_loss_warmup_steps: 1000
+  prototype_queue_size: 16384
+  prototype_queue_start_steps: 64
+  prototype_sinkhorn_iterations: 3
+  output_dir: D:/GitHub/stGPT/outputs/pilot_runs/atera_wta_v1_long_run/cervical_full_m6_lambda_0_05/train
+  device: cuda
+  num_workers: 2
+  seed: 7
+split:
+  strategy: spatial_block
+  train_fraction: 0.7
+  val_fraction: 0.15
+  test_fraction: 0.15
+  seed: 11
