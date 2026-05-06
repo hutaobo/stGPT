@@ -1,0 +1,178 @@
+suite_name: atera_wta_v1_long_run
+runs:
+  - run_id: breast_gene_spatial_10k_contour_unit
+    tissue: breast
+    condition: Deep Gene+Spatial contour-unit 10k
+    config_path: configs/pilots/atera_wta_v1_long_run/breast_gene_spatial_10k_contour_unit.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1_long_run/breast_gene_spatial_10k_contour_unit
+    expected_image_source: contour_store
+    expected_prototypes: 0
+    requires_alignment_telemetry: true
+    checkpoint_role: best_loss
+    lambda_align: 0.0
+    suite_stage: deep_saturation
+  - run_id: cervical_gene_spatial_10k_contour_unit
+    tissue: cervical
+    condition: Deep Gene+Spatial contour-unit 10k
+    config_path: configs/pilots/atera_wta_v1_long_run/cervical_gene_spatial_10k_contour_unit.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1_long_run/cervical_gene_spatial_10k_contour_unit
+    expected_image_source: contour_store
+    expected_prototypes: 0
+    requires_alignment_telemetry: true
+    checkpoint_role: best_loss
+    lambda_align: 0.0
+    suite_stage: deep_saturation
+  - run_id: breast_full_m6_contour_store_10k
+    tissue: breast
+    condition: Deep Full M6 contour-store 10k
+    config_path: configs/pilots/atera_wta_v1_long_run/breast_full_m6_contour_store_10k.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1_long_run/breast_full_m6_contour_store_10k
+    expected_image_source: contour_store
+    expected_prototypes: 32
+    requires_alignment_telemetry: true
+    checkpoint_role: best_alignment
+    lambda_align: 0.05
+    suite_stage: deep_saturation
+  - run_id: cervical_full_m6_contour_store_10k
+    tissue: cervical
+    condition: Deep Full M6 contour-store 10k
+    config_path: configs/pilots/atera_wta_v1_long_run/cervical_full_m6_contour_store_10k.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1_long_run/cervical_full_m6_contour_store_10k
+    expected_image_source: contour_store
+    expected_prototypes: 32
+    requires_alignment_telemetry: true
+    checkpoint_role: best_alignment
+    lambda_align: 0.05
+    suite_stage: deep_saturation
+  - run_id: breast_full_m6_lambda_0_01
+    tissue: breast
+    condition: Full M6 Pareto lambda=0.01
+    config_path: configs/pilots/atera_wta_v1_long_run/breast_full_m6_lambda_0_01.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1_long_run/breast_full_m6_lambda_0_01
+    expected_image_source: contour_store
+    expected_prototypes: 32
+    requires_alignment_telemetry: true
+    checkpoint_role: best_alignment
+    lambda_align: 0.01
+    suite_stage: pareto_grid
+  - run_id: breast_full_m6_lambda_0_05
+    tissue: breast
+    condition: Full M6 Pareto lambda=0.05
+    config_path: configs/pilots/atera_wta_v1_long_run/breast_full_m6_lambda_0_05.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1_long_run/breast_full_m6_lambda_0_05
+    expected_image_source: contour_store
+    expected_prototypes: 32
+    requires_alignment_telemetry: true
+    checkpoint_role: best_alignment
+    lambda_align: 0.05
+    suite_stage: pareto_grid
+  - run_id: breast_full_m6_lambda_0_1
+    tissue: breast
+    condition: Full M6 Pareto lambda=0.1
+    config_path: configs/pilots/atera_wta_v1_long_run/breast_full_m6_lambda_0_1.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1_long_run/breast_full_m6_lambda_0_1
+    expected_image_source: contour_store
+    expected_prototypes: 32
+    requires_alignment_telemetry: true
+    checkpoint_role: best_alignment
+    lambda_align: 0.1
+    suite_stage: pareto_grid
+  - run_id: breast_full_m6_lambda_0_5
+    tissue: breast
+    condition: Full M6 Pareto lambda=0.5
+    config_path: configs/pilots/atera_wta_v1_long_run/breast_full_m6_lambda_0_5.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1_long_run/breast_full_m6_lambda_0_5
+    expected_image_source: contour_store
+    expected_prototypes: 32
+    requires_alignment_telemetry: true
+    checkpoint_role: best_alignment
+    lambda_align: 0.5
+    suite_stage: pareto_grid
+  - run_id: breast_full_m6_lambda_1_0
+    tissue: breast
+    condition: Full M6 Pareto lambda=1.0
+    config_path: configs/pilots/atera_wta_v1_long_run/breast_full_m6_lambda_1_0.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1_long_run/breast_full_m6_lambda_1_0
+    expected_image_source: contour_store
+    expected_prototypes: 32
+    requires_alignment_telemetry: true
+    checkpoint_role: best_alignment
+    lambda_align: 1.0
+    suite_stage: pareto_grid
+  - run_id: breast_full_m6_lambda_2_0
+    tissue: breast
+    condition: Full M6 Pareto lambda=2.0
+    config_path: configs/pilots/atera_wta_v1_long_run/breast_full_m6_lambda_2_0.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1_long_run/breast_full_m6_lambda_2_0
+    expected_image_source: contour_store
+    expected_prototypes: 32
+    requires_alignment_telemetry: true
+    checkpoint_role: best_alignment
+    lambda_align: 2.0
+    suite_stage: pareto_grid
+  - run_id: cervical_full_m6_lambda_0_01
+    tissue: cervical
+    condition: Full M6 Pareto lambda=0.01
+    config_path: configs/pilots/atera_wta_v1_long_run/cervical_full_m6_lambda_0_01.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1_long_run/cervical_full_m6_lambda_0_01
+    expected_image_source: contour_store
+    expected_prototypes: 32
+    requires_alignment_telemetry: true
+    checkpoint_role: best_alignment
+    lambda_align: 0.01
+    suite_stage: pareto_grid
+  - run_id: cervical_full_m6_lambda_0_05
+    tissue: cervical
+    condition: Full M6 Pareto lambda=0.05
+    config_path: configs/pilots/atera_wta_v1_long_run/cervical_full_m6_lambda_0_05.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1_long_run/cervical_full_m6_lambda_0_05
+    expected_image_source: contour_store
+    expected_prototypes: 32
+    requires_alignment_telemetry: true
+    checkpoint_role: best_alignment
+    lambda_align: 0.05
+    suite_stage: pareto_grid
+  - run_id: cervical_full_m6_lambda_0_1
+    tissue: cervical
+    condition: Full M6 Pareto lambda=0.1
+    config_path: configs/pilots/atera_wta_v1_long_run/cervical_full_m6_lambda_0_1.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1_long_run/cervical_full_m6_lambda_0_1
+    expected_image_source: contour_store
+    expected_prototypes: 32
+    requires_alignment_telemetry: true
+    checkpoint_role: best_alignment
+    lambda_align: 0.1
+    suite_stage: pareto_grid
+  - run_id: cervical_full_m6_lambda_0_5
+    tissue: cervical
+    condition: Full M6 Pareto lambda=0.5
+    config_path: configs/pilots/atera_wta_v1_long_run/cervical_full_m6_lambda_0_5.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1_long_run/cervical_full_m6_lambda_0_5
+    expected_image_source: contour_store
+    expected_prototypes: 32
+    requires_alignment_telemetry: true
+    checkpoint_role: best_alignment
+    lambda_align: 0.5
+    suite_stage: pareto_grid
+  - run_id: cervical_full_m6_lambda_1_0
+    tissue: cervical
+    condition: Full M6 Pareto lambda=1.0
+    config_path: configs/pilots/atera_wta_v1_long_run/cervical_full_m6_lambda_1_0.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1_long_run/cervical_full_m6_lambda_1_0
+    expected_image_source: contour_store
+    expected_prototypes: 32
+    requires_alignment_telemetry: true
+    checkpoint_role: best_alignment
+    lambda_align: 1.0
+    suite_stage: pareto_grid
+  - run_id: cervical_full_m6_lambda_2_0
+    tissue: cervical
+    condition: Full M6 Pareto lambda=2.0
+    config_path: configs/pilots/atera_wta_v1_long_run/cervical_full_m6_lambda_2_0.yaml
+    run_dir: outputs/pilot_runs/atera_wta_v1_long_run/cervical_full_m6_lambda_2_0
+    expected_image_source: contour_store
+    expected_prototypes: 32
+    requires_alignment_telemetry: true
+    checkpoint_role: best_alignment
+    lambda_align: 2.0
+    suite_stage: pareto_grid

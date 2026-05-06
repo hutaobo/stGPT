@@ -25,6 +25,7 @@ def train(
     preset: str | None = None,
     max_steps: int | None = None,
     ablation: AblationMode | str | None = None,
+    resume: str | Path | None = None,
 ) -> dict[str, Any]:
     cfg = StGPTConfig.from_file(config, preset=preset) if isinstance(config, (str, Path)) else config.apply_preset(preset)
     cfg = cfg.apply_ablation(ablation or cfg.training.ablation_mode)
@@ -65,30 +66,7 @@ def train(
         if val_indices
         else None
     )
-    model = ImageGeneSTGPT(
-        n_genes=dataset.vocab.size - 1,
-        n_structures=dataset.n_structures,
-        d_model=cfg.model.d_model,
-        n_heads=cfg.model.n_heads,
-        n_layers=cfg.model.n_layers,
-        dim_feedforward=cfg.model.dim_feedforward,
-        n_expression_bins=cfg.model.n_expression_bins,
-        image_channels=cfg.model.image_channels,
-        patch_scales=cfg.model.patch_scales,
-        image_encoder_backend=_effective_image_encoder_backend(cfg),
-        image_encoder_preset=cfg.model.image_encoder_preset,
-        image_encoder_name=cfg.model.image_encoder_name,
-        image_encoder_frozen=cfg.model.image_encoder_frozen,
-        image_embedding_dim=cfg.model.image_embedding_dim or dataset.image_embedding_dim or None,
-        n_prototypes=cfg.model.n_prototypes,
-        prototype_temperature=cfg.model.prototype_temperature,
-        use_expression_values=cfg.model.use_expression_values,
-        use_image_context=cfg.model.use_image_context,
-        use_spatial_context=cfg.model.use_spatial_context,
-        use_structure_context=cfg.model.use_structure_context and cfg.data.include_structure_context,
-        use_cell_context=cfg.model.use_cell_context,
-        dropout=cfg.model.dropout,
-    ).to(device)
+    model = _build_model(dataset, cfg).to(device)
     prototype_queue, sinkhorn = _make_prototype_tools(cfg, model, device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.training.learning_rate, weight_decay=cfg.training.weight_decay)
     scheduler = _make_scheduler(optimizer, cfg)
@@ -102,6 +80,13 @@ def train(
     best_alignment_metric = float("inf")
     best_alignment_checkpoint_path = checkpoint_dir / "best_alignment.pt"
     step = 0
+    if resume is not None:
+        step, metrics, best_metric, best_alignment_metric = _load_training_checkpoint(
+            resume,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+        )
     model.train()
     while step < cfg.training.max_steps:
         for batch in loader:
@@ -152,6 +137,7 @@ def train(
                 scheduler.step()
             step += 1
             metric_row = {key: float(value.detach().cpu()) for key, value in losses.items()}
+            metric_row["step"] = float(step)
             metric_row["lr"] = float(optimizer.param_groups[0]["lr"])
             metric_row.update({key: float(value) for key, value in weights.items()})
 
@@ -171,6 +157,7 @@ def train(
                             metrics=metrics + [metric_row],
                             step=step,
                             best_metric=best_metric,
+                            best_alignment_metric=best_alignment_metric,
                             split_summary=_split_summary(splits),
                         )
                     val_alignment = val_metrics.get("val_image_gene_loss")
@@ -185,7 +172,8 @@ def train(
                             dataset=dataset,
                             metrics=metrics + [metric_row],
                             step=step,
-                            best_metric=best_alignment_metric,
+                            best_metric=best_metric,
+                            best_alignment_metric=best_alignment_metric,
                             split_summary=_split_summary(splits),
                         )
 
@@ -201,8 +189,12 @@ def train(
                     metrics=metrics,
                     step=step,
                     best_metric=best_metric,
+                    best_alignment_metric=best_alignment_metric,
                     split_summary=_split_summary(splits),
                 )
+                _write_metrics(output_dir, metrics)
+            elif "val_loss" in metric_row:
+                _write_metrics(output_dir, metrics)
 
     checkpoint_path = checkpoint_dir / "last.pt"
     if not best_checkpoint_path.exists():
@@ -217,6 +209,22 @@ def train(
             metrics=metrics,
             step=step,
             best_metric=best_metric,
+            best_alignment_metric=best_alignment_metric,
+            split_summary=_split_summary(splits),
+        )
+    if not best_alignment_checkpoint_path.exists():
+        best_alignment_metric = _best_alignment_from_metrics(metrics)
+        _save_checkpoint(
+            best_alignment_checkpoint_path,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            cfg=cfg,
+            dataset=dataset,
+            metrics=metrics,
+            step=step,
+            best_metric=best_metric,
+            best_alignment_metric=best_alignment_metric,
             split_summary=_split_summary(splits),
         )
     _save_checkpoint(
@@ -229,10 +237,10 @@ def train(
         metrics=metrics,
         step=step,
         best_metric=best_metric,
+        best_alignment_metric=best_alignment_metric,
         split_summary=_split_summary(splits),
     )
-    metrics_path = output_dir / "metrics.json"
-    metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    metrics_path = _write_metrics(output_dir, metrics)
     return {
         "checkpoint": str(checkpoint_path),
         "best_checkpoint": str(best_checkpoint_path),
@@ -241,6 +249,56 @@ def train(
         "metrics_path": str(metrics_path),
         "steps": step,
         "device": str(device),
+    }
+
+
+def initialize_random_checkpoint(
+    config: StGPTConfig | str | Path,
+    output: str | Path,
+    *,
+    preset: str | None = None,
+    ablation: AblationMode | str | None = None,
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """Write an untrained same-architecture checkpoint for sanity-floor evaluation."""
+    cfg = StGPTConfig.from_file(config, preset=preset) if isinstance(config, (str, Path)) else config.apply_preset(preset)
+    cfg = cfg.apply_ablation(ablation or cfg.training.ablation_mode)
+    if seed is not None:
+        payload = cfg.model_dump()
+        payload["training"]["seed"] = int(seed)
+        cfg = StGPTConfig.model_validate(payload)
+    _seed_everything(cfg.training.seed)
+    device = _resolve_device(cfg.training.device)
+    case = build_training_case(cfg)
+    dataset = RegionDataset(case, cfg)
+    if len(dataset) == 0:
+        raise ValueError("No trainable contour/region rows were found. Check contour membership and data.min_cells_per_region.")
+    _enforce_image_qc_gate(dataset, cfg)
+    splits = make_splits(case, cfg)
+    model = _build_model(dataset, cfg).to(device)
+    _materialize_model(model, dataset, cfg, device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.training.learning_rate, weight_decay=cfg.training.weight_decay)
+    output_path = Path(output).expanduser()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _save_checkpoint(
+        output_path,
+        model=model,
+        optimizer=optimizer,
+        scheduler=None,
+        cfg=cfg,
+        dataset=dataset,
+        metrics=[],
+        step=0,
+        best_metric=float("nan"),
+        best_alignment_metric=float("nan"),
+        split_summary=_split_summary(splits),
+    )
+    return {
+        "checkpoint": str(output_path),
+        "steps": 0,
+        "device": str(device),
+        "n_regions": len(dataset),
+        "training_unit": "region",
     }
 
 
@@ -263,6 +321,33 @@ def _effective_image_encoder_backend(config: StGPTConfig) -> str:
     return "precomputed" if config.data.image_embedding_store else str(config.model.image_encoder_backend)
 
 
+def _build_model(dataset: RegionDataset, cfg: StGPTConfig) -> ImageGeneSTGPT:
+    return ImageGeneSTGPT(
+        n_genes=dataset.vocab.size - 1,
+        n_structures=dataset.n_structures,
+        d_model=cfg.model.d_model,
+        n_heads=cfg.model.n_heads,
+        n_layers=cfg.model.n_layers,
+        dim_feedforward=cfg.model.dim_feedforward,
+        n_expression_bins=cfg.model.n_expression_bins,
+        image_channels=cfg.model.image_channels,
+        patch_scales=cfg.model.patch_scales,
+        image_encoder_backend=_effective_image_encoder_backend(cfg),
+        image_encoder_preset=cfg.model.image_encoder_preset,
+        image_encoder_name=cfg.model.image_encoder_name,
+        image_encoder_frozen=cfg.model.image_encoder_frozen,
+        image_embedding_dim=cfg.model.image_embedding_dim or dataset.image_embedding_dim or None,
+        n_prototypes=cfg.model.n_prototypes,
+        prototype_temperature=cfg.model.prototype_temperature,
+        use_expression_values=cfg.model.use_expression_values,
+        use_image_context=cfg.model.use_image_context,
+        use_spatial_context=cfg.model.use_spatial_context,
+        use_structure_context=cfg.model.use_structure_context and cfg.data.include_structure_context,
+        use_cell_context=cfg.model.use_cell_context,
+        dropout=cfg.model.dropout,
+    )
+
+
 def _enforce_image_qc_gate(dataset: RegionDataset, config: StGPTConfig) -> None:
     if not config.data.require_image_qc_pass:
         return
@@ -282,6 +367,36 @@ def _enforce_image_qc_gate(dataset: RegionDataset, config: StGPTConfig) -> None:
 
 def _move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
     return {key: value.to(device) if isinstance(value, torch.Tensor) else value for key, value in batch.items()}
+
+
+def _materialize_model(model: ImageGeneSTGPT, dataset: RegionDataset, cfg: StGPTConfig, device: torch.device) -> None:
+    loader = DataLoader(dataset, batch_size=cfg.training.batch_size, shuffle=False, collate_fn=dataset.collate, num_workers=0)
+    try:
+        batch = next(iter(loader))
+    except StopIteration:
+        return
+    batch = _move_batch(batch, device)
+    was_training = model.training
+    model.eval()
+    with torch.no_grad():
+        model(
+            gene_ids=batch["gene_ids"],
+            expr_values=batch["expr_values"],
+            expr_bins=batch["expr_bins"],
+            image=batch["image"],
+            spatial=batch["spatial"],
+            context_ids=batch["context_ids"],
+            gene_padding_mask=batch["gene_padding_mask"],
+            cell_expr_values=batch["cell_expr_values"],
+            cell_token_mask=batch["cell_token_mask"],
+            object_image=batch.get("object_image"),
+            context_image=batch.get("context_image"),
+            contour_mask=batch.get("contour_mask"),
+            contour_geometry=batch.get("contour_geometry"),
+            precomputed_image_embedding=batch.get("precomputed_image_embedding"),
+        )
+    if was_training:
+        model.train()
 
 
 def _make_scheduler(optimizer: torch.optim.Optimizer, config: StGPTConfig):
@@ -346,6 +461,8 @@ def _warmup_value(target: float, step: int, warmup_steps: int) -> float:
 def _should_validate(step: int, config: StGPTConfig) -> bool:
     if step == 1 or step >= config.training.max_steps:
         return True
+    if config.training.alignment_telemetry_every_n_steps:
+        return step % int(config.training.alignment_telemetry_every_n_steps) == 0
     if config.training.save_every_n_steps:
         return step % int(config.training.save_every_n_steps) == 0
     return False
@@ -362,6 +479,8 @@ def _evaluate_validation(
         return {}
     weights = _scheduled_loss_weights(config, step)
     rows: list[dict[str, float]] = []
+    region_embeddings: list[np.ndarray] = []
+    image_embeddings: list[np.ndarray] = []
     was_training = model.training
     model.eval()
     with torch.no_grad():
@@ -391,12 +510,52 @@ def _evaluate_validation(
                 structure_weight=weights["structure_loss_weight"],
             )
             rows.append({key: float(value.detach().cpu()) for key, value in losses.items()})
+            region_embeddings.append(output.region_emb.detach().cpu().numpy())
+            image_embeddings.append(output.image_emb.detach().cpu().numpy())
     if was_training:
         model.train()
     if not rows:
         return {}
     keys = sorted(rows[0])
-    return {f"val_{key}": float(np.mean([row[key] for row in rows])) for key in keys}
+    metrics = {f"val_{key}": float(np.mean([row[key] for row in rows])) for key in keys}
+    metrics.update(_validation_alignment_metrics(region_embeddings, image_embeddings, k=5))
+    return metrics
+
+
+def _validation_alignment_metrics(
+    region_embeddings: list[np.ndarray],
+    image_embeddings: list[np.ndarray],
+    *,
+    k: int,
+) -> dict[str, float]:
+    if not region_embeddings or not image_embeddings:
+        return {}
+    region = np.vstack(region_embeddings).astype(np.float32)
+    image = np.vstack(image_embeddings).astype(np.float32)
+    if region.size == 0 or image.size == 0 or region.shape[0] != image.shape[0]:
+        return {}
+    effective_k = min(int(k), int(region.shape[0]))
+    if effective_k <= 0:
+        return {}
+    sim = image @ region.T
+    image_to_gene = _topk_accuracy(sim, effective_k)
+    gene_to_image = _topk_accuracy(sim.T, effective_k)
+    return {
+        "val_image_to_gene_top5": float(image_to_gene),
+        "val_gene_to_image_top5": float(gene_to_image),
+        "val_alignment_score": float(np.mean([image_to_gene, gene_to_image])),
+    }
+
+
+def _topk_accuracy(similarity: np.ndarray, k: int) -> float:
+    if similarity.size == 0:
+        return float("nan")
+    effective_k = min(int(k), int(similarity.shape[1]))
+    if effective_k <= 0:
+        return float("nan")
+    topk = np.argpartition(-similarity, kth=effective_k - 1, axis=1)[:, :effective_k]
+    labels = np.arange(similarity.shape[0])[:, None]
+    return float((topk == labels).any(axis=1).mean())
 
 
 def _make_prototype_tools(
@@ -418,6 +577,64 @@ def _make_prototype_tools(
     return queue, sinkhorn
 
 
+def _load_training_checkpoint(
+    checkpoint: str | Path,
+    *,
+    model: ImageGeneSTGPT,
+    optimizer: torch.optim.Optimizer,
+    scheduler,
+) -> tuple[int, list[dict[str, float]], float, float]:
+    payload = torch.load(Path(checkpoint).expanduser(), map_location="cpu", weights_only=False)
+    model.load_state_dict(payload["model_state"], strict=False)
+    if payload.get("optimizer_state") is not None:
+        optimizer.load_state_dict(payload["optimizer_state"])
+        _move_optimizer_state(optimizer, next(model.parameters()).device)
+    if scheduler is not None and payload.get("scheduler_state") is not None:
+        scheduler.load_state_dict(payload["scheduler_state"])
+    metrics = payload.get("metrics", [])
+    summary = payload.get("training_summary", {})
+    best_metric = _safe_float(summary.get("best_metric"), default=_best_loss_from_metrics(metrics))
+    best_alignment_metric = _safe_float(
+        summary.get("best_alignment_metric"),
+        default=_best_alignment_from_metrics(metrics),
+    )
+    step = int(summary.get("steps", len(metrics)))
+    return step, metrics, best_metric, best_alignment_metric
+
+
+def _move_optimizer_state(optimizer: torch.optim.Optimizer, device: torch.device) -> None:
+    for state in optimizer.state.values():
+        for key, value in list(state.items()):
+            if isinstance(value, torch.Tensor):
+                state[key] = value.to(device)
+
+
+def _write_metrics(output_dir: Path, metrics: list[dict[str, float]]) -> Path:
+    metrics_path = output_dir / "metrics.json"
+    metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    return metrics_path
+
+
+def _best_loss_from_metrics(metrics: list[dict[str, float]]) -> float:
+    values = [_safe_float(row.get("val_loss"), default=float("nan")) for row in metrics]
+    values = [value for value in values if math.isfinite(value)]
+    return min(values) if values else float("inf")
+
+
+def _best_alignment_from_metrics(metrics: list[dict[str, float]]) -> float:
+    values = [_safe_float(row.get("val_image_gene_loss"), default=float("nan")) for row in metrics]
+    values = [value for value in values if math.isfinite(value)]
+    return min(values) if values else float("inf")
+
+
+def _safe_float(value: Any, *, default: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if math.isfinite(number) else default
+
+
 def _save_checkpoint(
     path: Path,
     *,
@@ -429,6 +646,7 @@ def _save_checkpoint(
     metrics: list[dict[str, float]],
     step: int,
     best_metric: float,
+    best_alignment_metric: float,
     split_summary: dict[str, Any],
 ) -> None:
     torch.save(
@@ -452,6 +670,7 @@ def _save_checkpoint(
                 "steps": step,
                 "last_metrics": metrics[-1] if metrics else {},
                 "best_metric": best_metric,
+                "best_alignment_metric": best_alignment_metric,
                 "ablation_mode": cfg.training.ablation_mode,
                 "lr_schedule": cfg.training.lr_schedule,
                 "training_unit": "region",
