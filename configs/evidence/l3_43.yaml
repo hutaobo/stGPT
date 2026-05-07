@@ -1,0 +1,35 @@
+suite_name: l3_20260507_43case
+runs:
+  - run_id: smoke_5case_full_m6_lambda_0_01_500
+    tissue: multi-organ smoke
+    condition: L3 smoke Full M6 contour-store lambda=0.01, 5 cases, 500 steps
+    config_path: configs/pilots/l3_43/smoke_5case_full_m6_lambda_0_01_500.yaml
+    run_dir: ${STGPT_OUTPUT_ROOT}/pilot_runs/l3_20260507_43case/smoke_5case_full_m6_lambda_0_01_500
+    expected_image_source: contour_store
+    expected_prototypes: 64
+    requires_alignment_telemetry: true
+    checkpoint_role: best_alignment
+    lambda_align: 0.01
+    suite_stage: l3_43_smoke
+  - run_id: full_m6_contour_store_lambda_0_01_20k
+    tissue: 43-case multi-organ
+    condition: L3 Full M6 contour-store lambda=0.01, slide-holdout, 20k steps
+    config_path: configs/pilots/l3_43/full_m6_contour_store_lambda_0_01_20k.yaml
+    run_dir: ${STGPT_OUTPUT_ROOT}/pilot_runs/l3_20260507_43case/full_m6_contour_store_lambda_0_01_20k
+    expected_image_source: contour_store
+    expected_prototypes: 128
+    requires_alignment_telemetry: true
+    checkpoint_role: best_alignment
+    lambda_align: 0.01
+    suite_stage: l3_43_foundation
+  - run_id: gene_spatial_contour_unit_20k
+    tissue: 43-case multi-organ
+    condition: L3 Gene+Spatial contour-unit baseline, slide-holdout, 20k steps
+    config_path: configs/pilots/l3_43/gene_spatial_contour_unit_20k.yaml
+    run_dir: ${STGPT_OUTPUT_ROOT}/pilot_runs/l3_20260507_43case/gene_spatial_contour_unit_20k
+    expected_image_source: contour_store
+    expected_prototypes: 0
+    requires_alignment_telemetry: true
+    checkpoint_role: best_loss
+    lambda_align: 0.0
+    suite_stage: l3_43_foundation

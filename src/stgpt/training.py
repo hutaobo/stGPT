@@ -35,12 +35,16 @@ def train(
         cfg = StGPTConfig.model_validate(payload)
     _seed_everything(cfg.training.seed)
     device = _resolve_device(cfg.training.device)
+    output_dir = cfg.training.output_path
+    output_dir.mkdir(parents=True, exist_ok=True)
     case = build_training_case(cfg)
     dataset = RegionDataset(case, cfg)
     if len(dataset) == 0:
         raise ValueError("No trainable contour/region rows were found. Check contour membership and data.min_cells_per_region.")
     _enforce_image_qc_gate(dataset, cfg)
     splits = make_splits(case, cfg)
+    splits_path = output_dir / "splits.csv"
+    splits.to_csv(splits_path, index=False)
     split_values = splits["split"].astype(str).to_numpy()
     train_indices = np.flatnonzero(split_values == "train").astype(int).tolist()
     val_indices = np.flatnonzero(split_values == "val").astype(int).tolist()
@@ -70,8 +74,6 @@ def train(
     prototype_queue, sinkhorn = _make_prototype_tools(cfg, model, device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.training.learning_rate, weight_decay=cfg.training.weight_decay)
     scheduler = _make_scheduler(optimizer, cfg)
-    output_dir = cfg.training.output_path
-    output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir = output_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     metrics: list[dict[str, float]] = []
@@ -247,6 +249,7 @@ def train(
         "best_alignment_checkpoint": str(best_alignment_checkpoint_path),
         "metrics": metrics,
         "metrics_path": str(metrics_path),
+        "splits": str(splits_path),
         "steps": step,
         "device": str(device),
     }

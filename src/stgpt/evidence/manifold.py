@@ -587,6 +587,10 @@ def _resolve_suite_path(value: str, suite_path: Path | None) -> Path:
         suite_candidate = (suite_path.parent / path).resolve()
         if suite_candidate.exists():
             return suite_candidate
+        for parent in suite_path.resolve().parents:
+            parent_candidate = (parent / path).resolve()
+            if parent_candidate.exists():
+                return parent_candidate
     return cwd_candidate
 
 

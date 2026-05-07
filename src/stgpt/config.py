@@ -41,6 +41,9 @@ class DataConfig(BaseModel):
     dataset_root: str | None = None
     slide_store: str | None = None
     dataset_roots: list[str] | None = None
+    dataset_manifest: str | None = None
+    dataset_root_base: str | None = None
+    dataset_manifest_case_column: str = "case_leaf"
     input_h5ad: str | None = None
     input_h5ad_list: list[str] | None = None
     spatho_run_root: str | None = None

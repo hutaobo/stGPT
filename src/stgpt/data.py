@@ -481,10 +481,44 @@ def _load_xenium_slide_patch_table(config: DataConfig, adata: ad.AnnData) -> pd.
 
 
 def _has_processed_xenium_slide_roots(config: DataConfig) -> bool:
-    roots = config.paths_or_empty(config.dataset_roots)
+    roots = _configured_dataset_roots(config)
     if not roots:
         return False
     return any(_resolve_processed_xenium_slide_root(root) is not None for root in roots)
+
+
+def _configured_dataset_roots(config: DataConfig) -> list[Path]:
+    roots = config.paths_or_empty(config.dataset_roots)
+    manifest_path = config.path_or_none(config.dataset_manifest)
+    if manifest_path is None:
+        return roots
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"data.dataset_manifest does not exist: {manifest_path}")
+    frame = pd.read_csv(manifest_path)
+    case_column = config.dataset_manifest_case_column
+    base = config.path_or_none(config.dataset_root_base) or manifest_path.parent
+    if case_column not in frame.columns:
+        raise ValueError(
+            f"data.dataset_manifest_case_column={case_column!r} is missing from {manifest_path}."
+        )
+    manifest_roots: list[Path] = []
+    for raw_value in frame[case_column].dropna().astype(str):
+        value = raw_value.strip()
+        if not value:
+            continue
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            candidate = base / candidate
+        manifest_roots.append(candidate)
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for root in [*roots, *manifest_roots]:
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(root)
+    return unique
 
 
 def _resolve_processed_xenium_slide_root(root: Path) -> tuple[Path, Path] | None:
@@ -501,9 +535,11 @@ def _resolve_processed_xenium_slide_root(root: Path) -> tuple[Path, Path] | None
 
 
 def _build_processed_xenium_slide_corpus_case(config: StGPTConfig) -> TrainingCase:
-    roots = config.data.paths_or_empty(config.data.dataset_roots)
+    roots = _configured_dataset_roots(config.data)
     if not roots:
-        raise FileNotFoundError("data.mode='corpus' requires data.dataset_roots for processed XeniumSlide corpus input.")
+        raise FileNotFoundError(
+            "data.mode='corpus' requires data.dataset_roots or data.dataset_manifest for processed XeniumSlide corpus input."
+        )
 
     cases: list[TrainingCase] = []
     for idx, root in enumerate(roots):
@@ -688,9 +724,11 @@ def _infer_organ_from_case_name(value: str) -> str | None:
 
 def _load_corpus(config: DataConfig) -> ad.AnnData:
     inputs = config.paths_or_empty(config.input_h5ad_list)
-    roots = config.paths_or_empty(config.dataset_roots)
+    roots = _configured_dataset_roots(config)
     if not inputs and not roots:
-        raise FileNotFoundError("data.mode='corpus' requires data.input_h5ad_list or data.dataset_roots.")
+        raise FileNotFoundError(
+            "data.mode='corpus' requires data.input_h5ad_list, data.dataset_roots, or data.dataset_manifest."
+        )
 
     adatas: list[ad.AnnData] = []
     keys: list[str] = []

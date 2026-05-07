@@ -75,6 +75,8 @@ def build_case_manifest(case: TrainingCase, config: StGPTConfig, output_dir: Pat
             "dataset_root": _path_text(config.data.path_or_none(config.data.dataset_root)),
             "slide_store": _path_text(config.data.path_or_none(config.data.slide_store)),
             "dataset_roots": [_path_text(path) for path in config.data.paths_or_empty(config.data.dataset_roots)],
+            "dataset_manifest": _path_text(config.data.path_or_none(config.data.dataset_manifest)),
+            "dataset_root_base": _path_text(config.data.path_or_none(config.data.dataset_root_base)),
             "input_h5ad": _path_text(config.data.path_or_none(config.data.input_h5ad)),
             "input_h5ad_list": [_path_text(path) for path in config.data.paths_or_empty(config.data.input_h5ad_list)],
             "spatho_run_root": _path_text(config.data.path_or_none(config.data.spatho_run_root)),

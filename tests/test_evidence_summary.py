@@ -198,6 +198,40 @@ def test_missing_artifacts_are_reported_without_crashing(tmp_path: Path) -> None
     assert "train/metrics.json" in status["runs"][0]["missing_artifacts"]
 
 
+def test_suite_paths_can_resolve_from_repo_root_parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = tmp_path / "repo"
+    (repo / "configs" / "pilots" / "l3").mkdir(parents=True)
+    config = _write_config(repo / "configs" / "pilots" / "l3" / "config.yaml")
+    suite_path = repo / "configs" / "evidence" / "suite.json"
+    suite_path.parent.mkdir(parents=True)
+    run_dir = tmp_path / "run"
+    _write_metrics(run_dir)
+    _write_spatho_export(run_dir, image_source="contour_store")
+    _write_suite(
+        suite_path,
+        [
+            {
+                "run_id": "contour",
+                "tissue": "multi-organ",
+                "condition": "L3 relative config path",
+                "config_path": "configs/pilots/l3/config.yaml",
+                "run_dir": str(run_dir),
+                "expected_image_source": "contour_store",
+                "expected_prototypes": 4,
+            }
+        ],
+    )
+    other_cwd = tmp_path / "not_repo"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+
+    result = summarize_evidence_suite(suite_path, tmp_path / "out")
+
+    assert result["status"] == "pass"
+    status = json.loads(Path(result["artifacts"]["run_status"]).read_text(encoding="utf-8"))
+    assert status["runs"][0]["config_path"] == str(config.resolve())
+
+
 def test_audit_evidence_pointers_accepts_all_image_sources(tmp_path: Path) -> None:
     for image_source in ("contour_store", "image_path", "zero_fallback"):
         run_dir = tmp_path / image_source

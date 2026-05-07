@@ -51,6 +51,7 @@ def test_train_smoke(tmp_path: Path) -> None:
     assert Path(result["checkpoint"]).exists()
     assert Path(result["best_checkpoint"]).exists()
     assert Path(result["best_alignment_checkpoint"]).exists()
+    assert Path(result["splits"]).exists()
     assert result["metrics"]
     assert "lr" in result["metrics"][-1]
     assert "val_alignment_score" in result["metrics"][-1]

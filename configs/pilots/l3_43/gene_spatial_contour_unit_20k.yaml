@@ -1,0 +1,52 @@
+case_name: l3_20260507_43case_gene_spatial_contour_unit_20k
+data:
+  mode: corpus
+  output_dir: ${STGPT_OUTPUT_ROOT}/pilot_runs/l3_20260507_43case/gene_spatial_contour_unit_20k/case
+  dataset_manifest: ${STGPT_XENIUM_SLIDES}/training_manifest_l3.csv
+  dataset_root_base: ${STGPT_XENIUM_SLIDES}
+  dataset_manifest_case_column: case_leaf
+  batch_id: l3_20260507_43case
+  stain: H&E
+  min_cells_per_region: 1
+  include_structure_context: false
+model:
+  d_model: 64
+  n_heads: 4
+  n_layers: 2
+  dim_feedforward: 128
+  max_genes: 256
+  n_expression_bins: 32
+  image_size: 64
+  max_cells_per_region: 16
+  n_prototypes: 0
+  use_expression_values: true
+  use_image_context: false
+  use_spatial_context: true
+  use_structure_context: false
+  use_cell_context: true
+training:
+  batch_size: 32
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  max_steps: 20000
+  warmup_steps: 1000
+  lr_schedule: cosine
+  save_every_n_steps: 500
+  alignment_telemetry_every_n_steps: 250
+  mask_probability: 0.15
+  neighborhood_k: 8
+  image_gene_loss_weight: 0.0
+  neighborhood_loss_weight: 0.25
+  structure_loss_weight: 0.0
+  prototype_loss_weight: 0.0
+  output_dir: ${STGPT_OUTPUT_ROOT}/pilot_runs/l3_20260507_43case/gene_spatial_contour_unit_20k/train
+  device: cuda
+  num_workers: 8
+  seed: 7
+split:
+  strategy: slide_holdout
+  group_key: corpus_slide_id
+  train_fraction: 0.7
+  val_fraction: 0.15
+  test_fraction: 0.15
+  seed: 11

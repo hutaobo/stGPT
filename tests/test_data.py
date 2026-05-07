@@ -242,6 +242,63 @@ def test_processed_xenium_slide_corpus_preserves_per_slide_contour_store(tmp_pat
     assert batch["row_index"].tolist() == [0, 0]
 
 
+def test_processed_xenium_slide_corpus_loads_roots_from_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slide_roots = [tmp_path / "Slide_A_outs", tmp_path / "Slide_B_outs"]
+    for root in slide_roots:
+        root.mkdir()
+        (root / "xenium_slide.zarr").mkdir()
+        _write_mock_packed_contour_inputs(root, n_contours=2, image_size=32, max_neighbors=1)
+    pd.DataFrame({"case_leaf": [root.name for root in slide_roots]}).to_csv(
+        tmp_path / "training_manifest_l3.csv",
+        index=False,
+    )
+
+    def fake_load_xenium_slide(data_config: DataConfig) -> ad.AnnData:
+        slide_name = Path(str(data_config.slide_store)).parent.name
+        obs = pd.DataFrame(
+            {
+                "cell_id": [f"{slide_name}_cell_a", f"{slide_name}_cell_b"],
+                "contour_id": ["contour_000", "contour_001"],
+                "structure_id": [1, 2],
+            },
+            index=[f"{slide_name}_cell_a", f"{slide_name}_cell_b"],
+        )
+        var = pd.DataFrame({"feature_name": ["GeneA", "GeneB"]}, index=["GeneA", "GeneB"])
+        adata = ad.AnnData(
+            X=sparse.csr_matrix(np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)),
+            obs=obs,
+            var=var,
+        )
+        adata.layers["rna"] = adata.X.copy()
+        adata.obsm["spatial"] = np.asarray([[0.0, 0.0], [10.0, 10.0]], dtype=np.float32)
+        return adata
+
+    monkeypatch.setattr(data_module, "_load_xenium_slide", fake_load_xenium_slide)
+    cfg = StGPTConfig(
+        case_name="manifest_corpus",
+        data=DataConfig(
+            mode="corpus",
+            dataset_manifest=str(tmp_path / "training_manifest_l3.csv"),
+            dataset_root_base=str(tmp_path),
+            output_dir=str(tmp_path / "case"),
+            min_cells_per_region=1,
+        ),
+        model=ModelConfig(d_model=32, n_heads=4, n_layers=1, max_genes=4, image_size=32, n_expression_bins=8),
+        training=TrainingConfig(batch_size=2, max_steps=1, output_dir=str(tmp_path / "train"), device="cpu"),
+    )
+
+    case = build_training_case(cfg)
+
+    assert case.adata.n_obs == 4
+    assert set(case.region_table["corpus_slide_id"]) == {"Slide_A_outs", "Slide_B_outs"}
+    assert set(case.region_table["image_store"].map(lambda value: Path(str(value)).parent.name)) == {
+        "Slide_A_outs",
+        "Slide_B_outs",
+    }
+
+
 def test_legacy_qc_codex_flags_downgrade_region_qc(tmp_path: Path) -> None:
     patch_dir = tmp_path / "patches"
     patch_a = write_synthetic_patch(patch_dir / "contour_a.png", image_size=32, structure_id=1, intensity=0.7, seed=1)
