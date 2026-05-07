@@ -234,6 +234,7 @@ def test_processed_xenium_slide_corpus_preserves_per_slide_contour_store(tmp_pat
     assert case.region_table["region_id"].is_unique
     assert set(case.region_table["corpus_slide_id"]) == {root.name for root in slide_roots}
     assert set(case.region_table["image_store"].map(lambda value: Path(str(value)).parent.name)) == {root.name for root in slide_roots}
+    assert set(case.region_table["contour_manifest"].map(lambda value: Path(str(value)).parent.name)) == {root.name for root in slide_roots}
     assert all("::" in value for value in case.region_table["region_id"].astype(str))
     assert case.region_expression.shape == (4, 4)
     assert batch["image_source"].tolist() == [2, 2]

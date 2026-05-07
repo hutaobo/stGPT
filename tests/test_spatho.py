@@ -27,6 +27,8 @@ from stgpt.spatho import (
     STRUCTURE_SUMMARY_REQUIRED_COLUMNS,
     PatchManifestRow,
     SpathoExportResult,
+    _contour_manifest_hash,
+    _geometry_pointer,
     run_spatho_export,
 )
 from stgpt.training import train
@@ -307,6 +309,22 @@ def test_run_spatho_export_writes_pointer_evidence_bundle(tmp_path: Path) -> Non
     assert first["model_derived_evidence"]["prototype_ref"]["artifact"] == "prototype_assignments.parquet"
     assert "checkpoint_hash" in first["provenance"]
     assert "emb_0" not in json.dumps(first)
+
+
+def test_geometry_pointer_uses_per_row_contour_manifest(tmp_path: Path) -> None:
+    cfg = _small_config(tmp_path)
+    manifest = tmp_path / "slide_a" / "contour_image_manifest.parquet"
+    manifest.parent.mkdir()
+    manifest.write_bytes(b"manifest")
+    row = pd.Series({"contour_manifest": str(manifest)})
+
+    pointer = _geometry_pointer(row, cfg, row_idx=0, source_row_index=7)
+    manifest_hash = _contour_manifest_hash(row, cfg, {})
+
+    assert pointer["artifact"] == str(manifest)
+    assert pointer["row_index"] == 7
+    assert pointer["columns"] == "geometry"
+    assert manifest_hash is not None
 
 
 def test_run_spatho_export_result_statistics(tmp_path: Path) -> None:

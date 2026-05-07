@@ -301,9 +301,11 @@ def _merge_contour_manifest(region_table: pd.DataFrame, config: DataConfig) -> p
             raise FileNotFoundError(f"data.contour_image_store does not exist: {store_path}")
         validate_contour_image_store(store_path)
         manifest["image_store"] = str(store_path)
+    manifest["contour_manifest"] = str(manifest_path)
 
     keep_columns = [
         "contour_id",
+        "contour_manifest",
         "row_index",
         "spatial_sort_key",
         "chunk_id",

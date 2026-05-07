@@ -1,0 +1,13 @@
+suite_name: atera_wta_multi_case
+runs:
+  - run_id: wta_breast_cervical_full_m6_lambda_0_01
+    tissue: breast+cervical
+    condition: Multi-case Full M6 contour-store lambda=0.01
+    config_path: configs/pilots/atera_wta_multi_case/wta_breast_cervical_full_m6_lambda_0_01.yaml
+    run_dir: ${STGPT_OUTPUT_ROOT}/pilot_runs/atera_wta_multi_case/wta_breast_cervical_full_m6_lambda_0_01
+    expected_image_source: contour_store
+    expected_prototypes: 32
+    requires_alignment_telemetry: true
+    checkpoint_role: best_alignment
+    lambda_align: 0.01
+    suite_stage: multi_case_contour_native

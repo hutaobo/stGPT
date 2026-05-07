@@ -342,13 +342,14 @@ def _write_contour_evidence_chains(
 ) -> None:
     config_hash = _config_hash(cfg)
     checkpoint_hash = _sha256_path(checkpoint_path)
-    contour_manifest_hash = _sha256_optional_path(cfg.data.path_or_none(cfg.data.contour_manifest))
+    manifest_hash_cache: dict[str, str | None] = {}
     emb_cols = [column for column in frame.columns if str(column).startswith("emb_")]
     with path.open("w", encoding="utf-8") as handle:
         for row_idx, row in frame.reset_index(drop=True).iterrows():
             proto_row = prototype_frame.iloc[row_idx] if row_idx < len(prototype_frame) else pd.Series(dtype=object)
             source_row_index = _nullable_int(row.get("row_index"))
             prototype_id = _nullable_int(proto_row.get("prototype_id"))
+            contour_manifest_hash = _contour_manifest_hash(row, cfg, manifest_hash_cache)
             record = {
                 "schema_version": "stgpt.evidence_pointer.v0.1",
                 "evidence_id": _evidence_id(cfg.case_name, row, row_idx),
@@ -367,7 +368,7 @@ def _write_contour_evidence_chains(
                         "matrix": "region_mean_expression",
                     },
                     "image_ref": _image_pointer(row, cfg, row_idx=row_idx, source_row_index=source_row_index),
-                    "geometry_ref": _geometry_pointer(cfg, row_idx=row_idx, source_row_index=source_row_index),
+                    "geometry_ref": _geometry_pointer(row, cfg, row_idx=row_idx, source_row_index=source_row_index),
                     "spatial": {
                         "x": _nullable_float(row.get("x")),
                         "y": _nullable_float(row.get("y")),
@@ -453,11 +454,28 @@ def _image_pointer(row: pd.Series, cfg: StGPTConfig, *, row_idx: int, source_row
     return {"artifact": "region_image_manifest.json", "row_index": row_idx, "source": "manifest_fallback"}
 
 
-def _geometry_pointer(cfg: StGPTConfig, *, row_idx: int, source_row_index: int | None) -> dict[str, Any]:
-    contour_manifest = cfg.data.contour_manifest
-    if contour_manifest and source_row_index is not None:
+def _geometry_pointer(row: pd.Series, cfg: StGPTConfig, *, row_idx: int, source_row_index: int | None) -> dict[str, Any]:
+    contour_manifest = _contour_manifest_path(row, cfg)
+    if contour_manifest is not None and source_row_index is not None:
         return {"artifact": str(contour_manifest), "row_index": source_row_index, "columns": "geometry"}
     return {"artifact": "region_image_manifest.json", "row_index": row_idx, "columns": "geometry_unavailable"}
+
+
+def _contour_manifest_path(row: pd.Series, cfg: StGPTConfig) -> Path | None:
+    row_manifest = _string_or_none(row.get("contour_manifest"))
+    if row_manifest is not None:
+        return Path(row_manifest).expanduser()
+    return cfg.data.path_or_none(cfg.data.contour_manifest)
+
+
+def _contour_manifest_hash(row: pd.Series, cfg: StGPTConfig, cache: dict[str, str | None]) -> str | None:
+    manifest_path = _contour_manifest_path(row, cfg)
+    if manifest_path is None:
+        return None
+    key = str(manifest_path)
+    if key not in cache:
+        cache[key] = _sha256_optional_path(manifest_path)
+    return cache[key]
 
 
 def _image_source(row: pd.Series, cfg: StGPTConfig, source_row_index: int | None) -> str:
