@@ -12,6 +12,7 @@ import torch
 from scipy import sparse
 from torch.utils.data import DataLoader
 
+import stgpt.data as data_module
 from stgpt.config import DataConfig, ModelConfig, StGPTConfig, TrainingConfig
 from stgpt.contour_store import (
     ContourStoreSpec,
@@ -181,6 +182,63 @@ def test_corpus_mode_concatenates_h5ad_and_assigns_slide_metadata(tmp_path: Path
     assert "slide_id" in adata.obs.columns
     assert set(adata.obs["slide_id"].astype(str)) == {"slide_a", "slide_b"}
     assert "batch_id" in adata.obs.columns
+
+
+def test_processed_xenium_slide_corpus_preserves_per_slide_contour_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    slide_roots = [tmp_path / "WTA_Preview_FFPE_Breast_Cancer_outs", tmp_path / "WTA_Preview_FFPE_Cervical_Cancer_outs"]
+    for root in slide_roots:
+        root.mkdir()
+        (root / "xenium_slide.zarr").mkdir()
+        _write_mock_packed_contour_inputs(root, n_contours=2, image_size=32, max_neighbors=1)
+
+    def fake_load_xenium_slide(data_config: DataConfig) -> ad.AnnData:
+        slide_name = Path(str(data_config.slide_store)).parent.name
+        obs = pd.DataFrame(
+            {
+                "cell_id": [f"{slide_name}_cell_a", f"{slide_name}_cell_b", f"{slide_name}_cell_c"],
+                "contour_id": ["contour_000", "contour_000", "contour_001"],
+                "structure_id": [1, 1, 2],
+                "structure_label": ["region_a", "region_a", "region_b"],
+            },
+            index=[f"{slide_name}_cell_a", f"{slide_name}_cell_b", f"{slide_name}_cell_c"],
+        )
+        var = pd.DataFrame(
+            {"feature_name": ["GeneA", "GeneB", f"{slide_name}_GeneC"]},
+            index=["GeneA", "GeneB", f"{slide_name}_GeneC"],
+        )
+        values = np.asarray([[1.0, 0.0, 2.0], [2.0, 1.0, 0.0], [0.0, 3.0, 1.0]], dtype=np.float32)
+        adata = ad.AnnData(X=sparse.csr_matrix(values), obs=obs, var=var)
+        adata.layers["rna"] = adata.X.copy()
+        adata.obsm["spatial"] = np.asarray([[0.0, 0.0], [1.0, 1.0], [10.0, 10.0]], dtype=np.float32)
+        return adata
+
+    monkeypatch.setattr(data_module, "_load_xenium_slide", fake_load_xenium_slide)
+    cfg = StGPTConfig(
+        case_name="multi_slide",
+        data=DataConfig(
+            mode="corpus",
+            dataset_roots=[str(root) for root in slide_roots],
+            output_dir=str(tmp_path / "case"),
+            min_cells_per_region=1,
+        ),
+        model=ModelConfig(d_model=32, n_heads=4, n_layers=1, max_genes=4, image_size=32, n_expression_bins=8),
+        training=TrainingConfig(batch_size=2, max_steps=1, output_dir=str(tmp_path / "train"), device="cpu"),
+    )
+
+    case = build_training_case(cfg)
+    dataset = ImageGeneDataset(case, cfg)
+    batch = dataset.collate([dataset[0], dataset[2]])
+
+    assert case.adata.n_obs == 6
+    assert len(case.region_table) == 4
+    assert case.region_table["region_id"].is_unique
+    assert set(case.region_table["corpus_slide_id"]) == {root.name for root in slide_roots}
+    assert set(case.region_table["image_store"].map(lambda value: Path(str(value)).parent.name)) == {root.name for root in slide_roots}
+    assert all("::" in value for value in case.region_table["region_id"].astype(str))
+    assert case.region_expression.shape == (4, 4)
+    assert batch["image_source"].tolist() == [2, 2]
+    assert batch["image"].shape == (2, 3, 32, 32)
+    assert batch["row_index"].tolist() == [0, 0]
 
 
 def test_legacy_qc_codex_flags_downgrade_region_qc(tmp_path: Path) -> None:

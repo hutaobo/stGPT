@@ -70,6 +70,8 @@ def build_training_case(config: StGPTConfig) -> TrainingCase:
     if config.data.mode == "synthetic":
         case = make_synthetic_case(config.data)
         return _build_region_training_case(case.adata, case.patch_table, config, output_dir=case.output_dir)
+    if config.data.mode == "corpus" and _has_processed_xenium_slide_roots(config.data):
+        return _build_processed_xenium_slide_corpus_case(config)
     adata = load_xenium_case(config)
     _merge_sibling_cell_to_contour(adata, config.data)
     patch_table = load_patch_table(config.data)
@@ -474,6 +476,212 @@ def _load_xenium_slide_patch_table(config: DataConfig, adata: ad.AnnData) -> pd.
             payload = DataConfig(mode="anndata", patch_manifest=str(candidate), output_dir=config.output_dir)
             return load_patch_table(payload)
     return pd.DataFrame(columns=["contour_id", "structure_id", "image_path"])
+
+
+def _has_processed_xenium_slide_roots(config: DataConfig) -> bool:
+    roots = config.paths_or_empty(config.dataset_roots)
+    if not roots:
+        return False
+    return any(_resolve_processed_xenium_slide_root(root) is not None for root in roots)
+
+
+def _resolve_processed_xenium_slide_root(root: Path) -> tuple[Path, Path] | None:
+    candidate = root.expanduser()
+    if candidate.name == "xenium_slide.zarr":
+        case_root = candidate.parent
+        slide_store = candidate
+    else:
+        case_root = candidate
+        slide_store = candidate / "xenium_slide.zarr"
+    if slide_store.exists():
+        return case_root, slide_store
+    return None
+
+
+def _build_processed_xenium_slide_corpus_case(config: StGPTConfig) -> TrainingCase:
+    roots = config.data.paths_or_empty(config.data.dataset_roots)
+    if not roots:
+        raise FileNotFoundError("data.mode='corpus' requires data.dataset_roots for processed XeniumSlide corpus input.")
+
+    cases: list[TrainingCase] = []
+    for idx, root in enumerate(roots):
+        resolved = _resolve_processed_xenium_slide_root(root)
+        if resolved is None:
+            raise FileNotFoundError(
+                "Processed XeniumSlide corpus roots must be case directories containing xenium_slide.zarr "
+                f"or direct xenium_slide.zarr paths; got: {root}"
+            )
+        case_root, slide_store = resolved
+        slide_id = case_root.name or f"slide_{idx}"
+        slide_cfg = _slide_corpus_item_config(config, case_root=case_root, slide_store=slide_store, slide_id=slide_id, index=idx)
+        adata = load_xenium_case(slide_cfg)
+        _merge_sibling_cell_to_contour(adata, slide_cfg.data)
+        patch_table = load_patch_table(slide_cfg.data)
+        if patch_table.empty:
+            patch_table = _load_xenium_slide_patch_table(slide_cfg.data, adata)
+        case = _build_region_training_case(adata, patch_table, slide_cfg, output_dir=slide_cfg.data.output_path)
+        cases.append(_prefix_training_case_ids(case, slide_cfg.data, source_name=slide_id))
+
+    output_dir = config.data.output_path
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return _concat_training_cases(cases, config, output_dir=output_dir)
+
+
+def _slide_corpus_item_config(
+    config: StGPTConfig,
+    *,
+    case_root: Path,
+    slide_store: Path,
+    slide_id: str,
+    index: int,
+) -> StGPTConfig:
+    patch_manifest = case_root / "contour_patches_manifest.json"
+    contour_manifest = case_root / "contour_image_manifest.parquet"
+    contour_store = case_root / "contour_image_store.zarr"
+    structure_csv = case_root / "structure_assignments.csv"
+    if bool(config.model.use_image_context) and (not contour_manifest.exists() or not contour_store.exists()):
+        raise FileNotFoundError(
+            "Contour-native corpus training requires contour_image_store.zarr and "
+            f"contour_image_manifest.parquet for image-enabled runs; missing under {case_root}"
+        )
+    updates = {
+        "mode": "xenium_slide",
+        "dataset_roots": None,
+        "input_h5ad_list": None,
+        "dataset_root": None,
+        "slide_store": str(slide_store),
+        "patch_manifest": str(patch_manifest) if patch_manifest.exists() else None,
+        "contour_manifest": str(contour_manifest) if contour_manifest.exists() else None,
+        "contour_image_store": str(contour_store) if contour_store.exists() else None,
+        "structure_assignments_csv": str(structure_csv) if structure_csv.exists() else None,
+        "slide_id": slide_id,
+        "batch_id": config.data.batch_id or slide_id,
+        "organ": config.data.organ or _infer_organ_from_case_name(slide_id),
+        "output_dir": str(config.data.output_path / "_slides" / _slugify_path_part(slide_id)),
+    }
+    data = config.data.model_copy(update=updates)
+    return config.model_copy(update={"case_name": f"{config.case_name}_{_slugify_path_part(slide_id)}", "data": data}, deep=True)
+
+
+def _prefix_training_case_ids(case: TrainingCase, config: DataConfig, *, source_name: str) -> TrainingCase:
+    prefix = f"{source_name}::"
+    adata = case.adata.copy()
+    adata.obs_names = [f"{prefix}{name}" for name in adata.obs_names.astype(str)]
+    if "cell_id" in adata.obs.columns:
+        adata.obs["cell_id"] = adata.obs["cell_id"].astype(str).map(lambda value: f"{prefix}{value}")
+    if config.region_id_key in adata.obs.columns:
+        adata.obs[config.region_id_key] = adata.obs[config.region_id_key].astype(str).map(lambda value: f"{prefix}{value}")
+    adata.obs["corpus_slide_id"] = source_name
+
+    region_table = case.region_table.copy()
+    for column in ("region_id", "contour_id"):
+        if column in region_table.columns:
+            region_table[column] = region_table[column].astype(str).map(lambda value: f"{prefix}{value}")
+    region_table["corpus_slide_id"] = source_name
+
+    cell_membership = case.cell_membership.copy()
+    if "region_id" in cell_membership.columns:
+        cell_membership["region_id"] = cell_membership["region_id"].astype(str).map(lambda value: f"{prefix}{value}")
+    if "cell_id" in cell_membership.columns:
+        cell_membership["cell_id"] = cell_membership["cell_id"].astype(str).map(lambda value: f"{prefix}{value}")
+    cell_membership["corpus_slide_id"] = source_name
+
+    patch_table = case.patch_table.copy()
+    for column in ("region_id", "contour_id", "cell_id"):
+        if column in patch_table.columns:
+            mask = patch_table[column].notna()
+            patch_table.loc[mask, column] = patch_table.loc[mask, column].astype(str).map(lambda value: f"{prefix}{value}")
+    patch_table["corpus_slide_id"] = source_name
+
+    return TrainingCase(
+        adata=adata,
+        patch_table=patch_table,
+        output_dir=case.output_dir,
+        region_table=region_table,
+        cell_membership=cell_membership,
+        region_expression=case.region_expression,
+    )
+
+
+def _concat_training_cases(cases: list[TrainingCase], config: StGPTConfig, *, output_dir: Path) -> TrainingCase:
+    if not cases:
+        raise ValueError("Processed XeniumSlide corpus contains no cases.")
+    adatas: list[ad.AnnData] = []
+    region_frames: list[pd.DataFrame] = []
+    membership_frames: list[pd.DataFrame] = []
+    patch_frames: list[pd.DataFrame] = []
+    expression_frames: list[pd.DataFrame] = []
+    all_genes: list[str] = []
+    seen_genes: set[str] = set()
+    keys: list[str] = []
+
+    for idx, case in enumerate(cases):
+        slide_id = str(case.region_table["corpus_slide_id"].iloc[0]) if "corpus_slide_id" in case.region_table.columns and not case.region_table.empty else f"slide_{idx}"
+        keys.append(slide_id)
+        adata = case.adata.copy()
+        gene_names = _adata_gene_names(adata, config.data.gene_name_key)
+        adata.var_names = gene_names
+        adata.var[config.data.gene_name_key] = gene_names
+        for gene in gene_names:
+            if gene not in seen_genes:
+                seen_genes.add(gene)
+                all_genes.append(gene)
+        adatas.append(adata)
+        region_frames.append(case.region_table.copy())
+        membership_frames.append(case.cell_membership.copy())
+        patch_frames.append(case.patch_table.copy())
+        expression_frames.append(
+            pd.DataFrame(
+                case.region_expression.toarray(),
+                index=case.region_table["region_id"].astype(str).to_numpy(),
+                columns=gene_names,
+            )
+        )
+
+    merged = ad.concat(adatas, label="corpus_source", keys=keys, join="outer", fill_value=0.0, index_unique=None)
+    merged = merged[:, all_genes].copy()
+    if "rna" not in merged.layers:
+        merged.layers["rna"] = merged.X.copy()
+    merged.var[config.data.gene_name_key] = merged.var_names.astype(str)
+    region_table = pd.concat(region_frames, ignore_index=True) if region_frames else pd.DataFrame()
+    cell_membership = pd.concat(membership_frames, ignore_index=True) if membership_frames else pd.DataFrame()
+    patch_table = pd.concat(patch_frames, ignore_index=True) if patch_frames else pd.DataFrame()
+    region_expression = (
+        sparse.csr_matrix(pd.concat([frame.reindex(columns=all_genes, fill_value=0.0) for frame in expression_frames]).to_numpy(dtype=np.float32))
+        if expression_frames
+        else sparse.csr_matrix((0, merged.n_vars), dtype=np.float32)
+    )
+    return TrainingCase(
+        adata=merged,
+        patch_table=patch_table,
+        output_dir=output_dir,
+        region_table=region_table.reset_index(drop=True),
+        cell_membership=cell_membership.reset_index(drop=True),
+        region_expression=region_expression,
+    )
+
+
+def _adata_gene_names(adata: ad.AnnData, gene_name_key: str) -> list[str]:
+    if gene_name_key in adata.var.columns:
+        return [str(value) for value in adata.var[gene_name_key].to_numpy()]
+    return [str(value) for value in adata.var_names]
+
+
+def _slugify_path_part(value: str) -> str:
+    return "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in str(value)).strip("_") or "slide"
+
+
+def _infer_organ_from_case_name(value: str) -> str | None:
+    text = value.lower()
+    if "breast" in text:
+        return "Breast"
+    if "cervical" in text or "cervix" in text:
+        return "Cervical"
+    if "brain" in text:
+        return "Brain"
+    if "lung" in text:
+        return "Lung"
+    return None
 
 
 def _load_corpus(config: DataConfig) -> ad.AnnData:
