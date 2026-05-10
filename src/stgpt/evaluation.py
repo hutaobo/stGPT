@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -250,17 +251,18 @@ def _retrieval_metrics(region_emb: np.ndarray, image_emb: np.ndarray, split_fram
     for split, indices in _split_indices(split_frame).items():
         if len(indices) == 0:
             continue
-        sim = image_emb[indices] @ region_emb[indices].T
         for k in (1, 5):
             effective_k = min(k, len(indices))
+            split_region = region_emb[indices]
+            split_image = image_emb[indices]
             rows.append(
                 {
                     "split": split,
                     "k": int(k),
                     "effective_k": int(effective_k),
                     "n_regions": int(len(indices)),
-                    "image_to_gene_topk": _topk_accuracy(sim, effective_k),
-                    "gene_to_image_topk": _topk_accuracy(sim.T, effective_k),
+                    "image_to_gene_topk": _paired_topk_accuracy(split_image, split_region, effective_k),
+                    "gene_to_image_topk": _paired_topk_accuracy(split_region, split_image, effective_k),
                 }
             )
     return pd.DataFrame(rows)
@@ -527,34 +529,46 @@ def _same_label_recall(embeddings: np.ndarray, labels: np.ndarray, k: int) -> fl
     effective_k = min(k, embeddings.shape[0] - 1)
     if effective_k <= 0:
         return float("nan")
-    sim = embeddings @ embeddings.T
-    np.fill_diagonal(sim, -np.inf)
-    neighbors = np.argpartition(-sim, kth=effective_k - 1, axis=1)[:, :effective_k]
-    same = labels[neighbors] == labels[:, None]
-    return float(same.any(axis=1).mean())
+    labels = np.asarray(labels)
+    hits = 0
+    n_rows = int(embeddings.shape[0])
+    for start, end in _chunk_ranges(n_rows):
+        sim = embeddings[start:end] @ embeddings.T
+        sim[np.arange(end - start), np.arange(start, end)] = -np.inf
+        neighbors = np.argpartition(-sim, kth=effective_k - 1, axis=1)[:, :effective_k]
+        same = labels[neighbors] == labels[start:end, None]
+        hits += int(same.any(axis=1).sum())
+    return float(hits / n_rows)
 
 
 def _neighbor_entropy(embeddings: np.ndarray, labels: np.ndarray, k: int) -> float:
     if embeddings.shape[0] <= 1:
         return float("nan")
+    labels = np.asarray(labels)
     n_labels = int(pd.Series(labels).nunique())
     if n_labels < 2:
         return float("nan")
     effective_k = min(k, embeddings.shape[0] - 1)
     if effective_k <= 0:
         return float("nan")
-    sim = embeddings @ embeddings.T
-    np.fill_diagonal(sim, -np.inf)
-    neighbors = np.argpartition(-sim, kth=effective_k - 1, axis=1)[:, :effective_k]
-    entropies = []
-    for row in neighbors:
-        counts = pd.Series(labels[row]).value_counts(normalize=True).to_numpy(dtype=np.float64)
-        entropy = -float(np.sum(counts * np.log(counts + 1e-12)))
-        entropies.append(entropy / max(1e-12, float(np.log(n_labels))))
-    return float(np.mean(entropies))
+    entropy_sum = 0.0
+    n_rows = int(embeddings.shape[0])
+    for start, end in _chunk_ranges(n_rows):
+        sim = embeddings[start:end] @ embeddings.T
+        sim[np.arange(end - start), np.arange(start, end)] = -np.inf
+        neighbors = np.argpartition(-sim, kth=effective_k - 1, axis=1)[:, :effective_k]
+        for row in neighbors:
+            counts = pd.Series(labels[row]).value_counts(normalize=True).to_numpy(dtype=np.float64)
+            entropy = -float(np.sum(counts * np.log(counts + 1e-12)))
+            entropy_sum += entropy / max(1e-12, float(np.log(n_labels)))
+    return float(entropy_sum / n_rows)
 
 
 def _silhouette(embeddings: np.ndarray, labels: np.ndarray) -> float:
+    if embeddings.shape[0] > _silhouette_max_regions():
+        indices = np.linspace(0, embeddings.shape[0] - 1, num=_silhouette_max_regions(), dtype=np.int64)
+        embeddings = embeddings[indices]
+        labels = np.asarray(labels)[indices]
     n_labels = int(pd.Series(labels).nunique())
     if embeddings.shape[0] < 3 or n_labels < 2 or n_labels >= embeddings.shape[0]:
         return float("nan")
@@ -567,6 +581,49 @@ def _silhouette(embeddings: np.ndarray, labels: np.ndarray) -> float:
 def _concat(values: list[np.ndarray]) -> np.ndarray:
     non_empty = [value for value in values if value.size]
     return np.concatenate(non_empty).astype(np.float32) if non_empty else np.zeros(0, dtype=np.float32)
+
+
+def _paired_topk_accuracy(query: np.ndarray, gallery: np.ndarray, k: int) -> float:
+    if query.size == 0 or gallery.size == 0:
+        return float("nan")
+    if query.shape[0] != gallery.shape[0]:
+        raise ValueError("paired retrieval requires query and gallery arrays with matching row counts.")
+    n_rows = int(query.shape[0])
+    effective_k = min(int(k), n_rows)
+    if effective_k <= 0:
+        return float("nan")
+    hits = 0
+    for start, end in _chunk_ranges(n_rows):
+        sim = query[start:end] @ gallery.T
+        topk = np.argpartition(-sim, kth=effective_k - 1, axis=1)[:, :effective_k]
+        expected = np.arange(start, end)[:, None]
+        hits += int((topk == expected).any(axis=1).sum())
+    return float(hits / n_rows)
+
+
+def _chunk_ranges(n_rows: int):
+    chunk_size = _similarity_chunk_size()
+    for start in range(0, int(n_rows), chunk_size):
+        yield start, min(start + chunk_size, int(n_rows))
+
+
+def _similarity_chunk_size() -> int:
+    return _positive_int_env("STGPT_EVAL_SIM_CHUNK_SIZE", default=512)
+
+
+def _silhouette_max_regions() -> int:
+    return _positive_int_env("STGPT_EVAL_SILHOUETTE_MAX_REGIONS", default=4096)
+
+
+def _positive_int_env(name: str, *, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return int(default)
+    try:
+        value = int(raw)
+    except ValueError:
+        return int(default)
+    return max(1, value)
 
 
 def _mse(pred: np.ndarray, target: np.ndarray) -> float:

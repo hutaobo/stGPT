@@ -403,13 +403,42 @@ class ContourEvidenceEncoder(nn.Module):
 
     def _shape_token(self, object_image: Tensor, contour_geometry: Tensor | None) -> Tensor:
         batch_size = int(object_image.shape[0])
+        expected_width = self._expected_shape_width()
         if contour_geometry is None or contour_geometry.numel() == 0:
-            contour_geometry = torch.zeros(batch_size, 1, dtype=object_image.dtype, device=object_image.device)
+            width = expected_width or 1
+            contour_geometry = torch.zeros(batch_size, width, dtype=object_image.dtype, device=object_image.device)
         else:
             contour_geometry = contour_geometry.to(device=object_image.device, dtype=object_image.dtype)
             if contour_geometry.ndim == 1:
                 contour_geometry = contour_geometry.unsqueeze(1)
+            elif contour_geometry.ndim > 2:
+                contour_geometry = contour_geometry.flatten(start_dim=1)
+        if expected_width is not None:
+            current_width = int(contour_geometry.shape[1])
+            if current_width < expected_width:
+                pad = torch.zeros(
+                    batch_size,
+                    expected_width - current_width,
+                    dtype=contour_geometry.dtype,
+                    device=contour_geometry.device,
+                )
+                contour_geometry = torch.cat([contour_geometry, pad], dim=1)
+            elif current_width > expected_width:
+                contour_geometry = contour_geometry[:, :expected_width]
         return self.shape_encoder(contour_geometry)
+
+    def _expected_shape_width(self) -> int | None:
+        first_layer = self.shape_encoder[0]
+        has_uninitialized = getattr(first_layer, "has_uninitialized_params", None)
+        if callable(has_uninitialized) and has_uninitialized():
+            return None
+        weight = getattr(first_layer, "weight", None)
+        if weight is not None and getattr(weight, "ndim", 0) == 2:
+            width = int(weight.shape[1])
+            if width > 0:
+                return width
+        in_features = int(getattr(first_layer, "in_features", 0) or 0)
+        return in_features if in_features > 0 else None
 
 
 class GatedCrossAttentionBlock(nn.Module):

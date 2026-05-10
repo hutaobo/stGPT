@@ -138,6 +138,30 @@ def test_model_accepts_contour_evidence_tokens() -> None:
     assert output.structure_logits is not None
 
 
+def test_model_pads_missing_contour_geometry_after_shape_encoder_initialization() -> None:
+    model = ImageGeneSTGPT(n_genes=12, n_structures=2, d_model=32, n_heads=4, n_layers=1, n_expression_bins=8)
+    batch_size = 3
+    seq_len = 6
+    kwargs = {
+        "gene_ids": torch.randint(1, 12, (batch_size, seq_len)),
+        "expr_values": torch.rand(batch_size, seq_len),
+        "expr_bins": torch.randint(0, 8, (batch_size, seq_len)),
+        "image": torch.rand(batch_size, 3, 32, 32),
+        "object_image": torch.rand(batch_size, 3, 32, 32),
+        "context_image": torch.rand(batch_size, 3, 32, 32),
+        "contour_mask": torch.ones(batch_size, 1, 32, 32),
+        "spatial": torch.rand(batch_size, 2),
+        "context_ids": torch.ones(batch_size, dtype=torch.long),
+    }
+
+    model(contour_geometry=torch.rand(batch_size, 8), **kwargs)
+    model.contour_encoder.shape_encoder[0].in_features = 0
+    output = model(contour_geometry=torch.empty(batch_size, 0), **kwargs)
+
+    assert output.gene_pred.shape == (batch_size, seq_len)
+    assert output.image_emb.shape == (batch_size, 32)
+
+
 def test_model_outputs_prototype_assignments_when_enabled() -> None:
     model = ImageGeneSTGPT(n_genes=12, d_model=32, n_heads=4, n_layers=1, n_expression_bins=8, n_prototypes=4)
     batch_size = 3
