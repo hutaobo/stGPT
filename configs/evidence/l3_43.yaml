@@ -33,3 +33,14 @@ runs:
     checkpoint_role: best_loss
     lambda_align: 0.0
     suite_stage: l3_43_foundation
+  - run_id: structure_context_m6_20k
+    tissue: 43-case multi-organ
+    condition: L3 Structure-context M6 contour-store, slide-holdout, 20k steps
+    config_path: configs/pilots/l3_43/structure_context_m6_20k.yaml
+    run_dir: ${STGPT_OUTPUT_ROOT}/pilot_runs/l3_20260507_43case/structure_context_m6_20k
+    expected_image_source: contour_store
+    expected_prototypes: 128
+    requires_alignment_telemetry: true
+    checkpoint_role: best_loss
+    lambda_align: 0.01
+    suite_stage: l3_43_structure_context
