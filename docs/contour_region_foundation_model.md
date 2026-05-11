@@ -258,6 +258,39 @@ Required metrics:
 
 Every result table should include ablation baselines from the same split file.
 
+## 10.1 L3-43 v0.1 Evidence Milestone
+
+The first completed multi-case contour-level milestone is `L3-43 v0.1 evidence milestone`, generated from the frozen `l3_20260507_43case` data version.
+
+Provenance:
+
+- stGPT commit: `df9cad2`
+- pyXenium commit: `c039a91`
+- pyXenium version: `0.4.5`
+- Private lightweight evidence repository: `hutaobo/stgpt-l3-evidence-20260504`
+- Evidence repository commit: `ba960dae59852b9e94dbe2c699ebaa4d61bb0396`
+
+Result status:
+
+- The 5-case smoke run, 43-case Full M6 contour-store run, and 43-case gene+spatial contour-unit baseline all passed.
+- The 43-case exports cover 293,678 contour/region records.
+- Full M6 learned strong image-gene alignment while preserving gene reconstruction quality.
+- Gene+spatial remains the stronger control for weak label/structure retrieval.
+- Pointer audit reported zero pointer errors and zero missing provenance hashes.
+
+Interpretation:
+
+- This milestone proves that the contour/region-level stGPT pipeline can run end-to-end on a frozen 43-case Xenium-centered corpus.
+- It should be described as a contour-level multimodal pipeline and evidence milestone, not as a finished foundation model.
+- The immediate model weakness is not global image-gene alignment; it is structure/label semantics, which were not optimized in the L3-43 Full M6 objective.
+- The next recommended experiment is a `structure_context_m6` run on the same frozen data. Virchow/UNI should start as a small smoke only if failure review indicates image encoder capacity is a likely bottleneck.
+
+Paper-facing outputs:
+
+- [`docs/results/l3_43_v0_1_paper_summary.md`](results/l3_43_v0_1_paper_summary.md)
+- [`docs/results/l3_43_v0_1_failure_modes.md`](results/l3_43_v0_1_failure_modes.md)
+- [`docs/results/next_experiment_recommendation.json`](results/next_experiment_recommendation.json)
+
 ## 11. Pathology Vocabulary and RAG Layer
 
 Pathology textbook or reference material should not be treated as the primary training data for the stGPT foundation embedding. The core representation should be learned from registered H&E morphology, measured Xenium molecular evidence, cell-to-contour membership, and spatial context.

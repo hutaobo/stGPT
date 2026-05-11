@@ -1,0 +1,47 @@
+{
+  "milestone": "L3-43 v0.1 evidence milestone",
+  "data_version": "l3_20260507_43case",
+  "status": "ready_for_result_discussion",
+  "do_not_do_now": [
+    "do not expand data",
+    "do not restart completed L3-43 guard pipeline",
+    "do not claim final foundation-model status"
+  ],
+  "recommended_order": [
+    {
+      "rank": 1,
+      "experiment": "structure_context_m6",
+      "decision": "run_next",
+      "rationale": "Full M6 underperforms baseline on label retrieval and the current L3-43 objective did not optimize structure context.",
+      "success_criteria": {
+        "label_top1_or_top5": "above current Full M6",
+        "gene_correlation": ">=0.995",
+        "pointer_errors": 0
+      }
+    },
+    {
+      "rank": 2,
+      "experiment": "virchow_uni_multi_case_smoke",
+      "decision": "run_after_failure_review",
+      "rationale": "Only useful if failure review suggests lightweight image encoder capacity is limiting structure or morphology semantics.",
+      "success_criteria": {
+        "image_gene_top1": ">=0.90 on smoke",
+        "label_retrieval": "improves over lightweight image encoder smoke"
+      }
+    },
+    {
+      "rank": 3,
+      "experiment": "data_expansion",
+      "decision": "defer",
+      "rationale": "The existing 43-case milestone is sufficient for objective and encoder decisions."
+    }
+  ],
+  "diagnostics": {
+    "full_label_top1": 0.06296011277657843,
+    "baseline_label_top1": 0.12827654778362696,
+    "baseline_minus_full_label_top1": 0.06531643500704853,
+    "pointer_errors_total": 0,
+    "full_failure_rows": 18,
+    "baseline_failure_rows": 18
+  }
+}
