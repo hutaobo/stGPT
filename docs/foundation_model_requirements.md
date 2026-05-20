@@ -2,7 +2,7 @@
 
 Status: Draft v0.1
 Audience: stGPT and spatho developers
-Primary goal: guide development from the current Xenium-first prototype toward a reproducible morpho-molecular foundation model and an agentic spatial pathology workbench.
+Primary goal: guide development from the current platform-aware prototype toward a reproducible morpho-molecular foundation model and an agentic spatial pathology workbench.
 
 Companion guidance: [`contour_region_foundation_model.md`](contour_region_foundation_model.md) defines the preferred final product shape where contour and region embeddings are the primary runtime output, while cell-level data remains the auditable molecular evidence layer.
 
@@ -19,7 +19,7 @@ Raw Data -> stgpt.contracts -> stgpt.foundation -> stgpt.runtime -> spatho.workb
         stgpt.evidence <- Audit Trail and Evidence Graph <- spatho.reports
 ```
 
-stGPT should not be positioned as only an H&E-to-expression predictor. It should learn reusable Xenium-centered tissue representations from real spatial transcriptomics cases through masked molecular modeling, image-gene alignment, spatial niche reconstruction, and panel-aware imputation. The preferred runtime representation is contour/region-level, with cell-level data retained as the traceable molecular evidence layer.
+stGPT should not be positioned as only an H&E-to-expression predictor. It should learn reusable platform-aware tissue representations from real spatial transcriptomics cases, currently including Xenium and Atera data, through masked molecular modeling, image-gene alignment, spatial niche reconstruction, and panel-aware imputation. The preferred runtime representation is contour/region-level, with cell-level data retained as the traceable molecular evidence layer.
 
 spatho should not be positioned as only a web wrapper. It should become an agentic spatial pathology workbench that calls stGPT, HistoSeg, QC tools, and evidence judges to produce traceable biological claims.
 
@@ -29,9 +29,9 @@ stGPT can be called a foundation model only when one checkpoint supports multipl
 
 Minimum qualifying capabilities:
 
-- Generate useful contour/region embeddings for unseen Xenium slides, with cell, niche, and region evidence available for provenance.
+- Generate useful contour/region embeddings for unseen spatial transcriptomics slides, with cell, niche, and region evidence available for provenance.
 - Support image-gene retrieval between H&E patches, cells, and spatial regions.
-- Perform panel-aware reconstruction or imputation inside the measured Xenium panel.
+- Perform panel-aware reconstruction or imputation inside the measured platform panel.
 - Improve niche discovery, structure annotation, or region comparison over simple baselines.
 - Preserve useful behavior across held-out slides, cases, batches, and stains.
 - Ship with a checkpoint card that documents training data, modalities, panel, split fingerprint, known failure modes, and intended use.
@@ -43,18 +43,18 @@ Non-goals for the first foundation checkpoint:
 - Do not treat imputed values as measured molecular evidence.
 - Do not publish random cell-level splits as evidence of generalization.
 
-## 3. Real Xenium Data Learning Pipeline
+## 3. Real Spatial Transcriptomics Data Learning Pipeline
 
-Every real Xenium case must be converted into a canonical learning object before training.
+Every real spatial transcriptomics case must be converted into a canonical learning object before training.
 
 Required per-case inputs:
 
 - Cell-by-gene expression matrix.
 - Cell centroids and, when available, cell boundaries.
 - Spatial coordinates in physical micrometer units.
-- Xenium panel metadata and gene identifiers.
+- Platform-specific panel metadata and gene identifiers.
 - H&E or morphology image references.
-- Image-to-Xenium registration transform, when image context is used.
+- Image-to-ST registration transform, when image context is used.
 - Optional clusters, structures, pathology regions, and spatho or HistoSeg contour outputs.
 - Batch metadata: case, slide, donor, organ, stain, scanner, run, and platform when available.
 
@@ -74,7 +74,7 @@ Create a contract layer before adding more model-specific adapters. The recommen
 
 This layer owns typed schemas and interchange rules for:
 
-- `XeniumSlide`: one validated spatial transcriptomics case.
+- `XeniumSlide`: one validated spatial transcriptomics case in the current pyXenium-backed store format; the contract must carry platform metadata rather than implying Xenium-only scope.
 - `GenePanel`: measured genes, panel version, missing-gene sentinels, and panel compatibility rules.
 - `SpatialTransform`: explicit transforms between physical micrometer space, image pixel space, and registered analysis space.
 - `HEPatch`: patch image reference, source image, physical location, extraction parameters, and registration metadata.
@@ -306,12 +306,12 @@ Requirements:
 
 ## 12. Development Milestones
 
-### v0: Trustworthy Xenium Prototype
+### v0: Trustworthy Platform-Aware Prototype
 
 Scope:
 
 - One organ or focused disease setting.
-- One or a small number of Xenium panels.
+- One or a small number of measured panels from Xenium, Atera, or another supported platform.
 - Canonical contract objects for slide, panel, patch, transform, embedding, and region.
 - Current stGPT model trained on validated cases.
 - QC, evaluation, failure analysis, and ablation outputs.
@@ -324,7 +324,7 @@ Acceptance criteria:
 - Ablations run from the same split.
 - Reports can cite checkpoint and tool-call provenance.
 
-### v1: Multi-case Xenium Foundation Checkpoint
+### v1: Multi-case Platform-Aware Foundation Checkpoint
 
 Scope:
 
@@ -344,7 +344,7 @@ Acceptance criteria:
 
 Scope:
 
-- Multi-organ Xenium corpus.
+- Multi-organ spatial transcriptomics corpus across Xenium, Atera, and optional additional platforms.
 - Optional Visium HD, CosMx, MERFISH, or other platform adapters.
 - MCP runtime tools.
 - Evidence graph reports with reproduction CLI.
