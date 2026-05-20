@@ -162,6 +162,42 @@ stgpt spatho-embed --model outputs/atera_wta_breast/model --config configs/atera
 
 The spatho export writes `region_embeddings.parquet`, `region_cell_membership.parquet`, `region_molecular_summary.parquet`, `region_image_manifest.json`, `region_qc_report.json`, `evidence_manifest.json`, `structure_summary.parquet`, and `structure_embedding_summary.csv`.
 
+## Region Auto-Annotation
+
+When part of a slide is annotated and the rest is not, propagate the labels
+with `stgpt annotate-regions`. The command consumes a seed CSV
+(`region_id, structure_label[, confidence]`), reuses the trained
+`structure_head` calibrated by temperature scaling, and writes
+`region_predictions.parquet` plus `auto_annotation_report.json`:
+
+```bash
+stgpt annotate-regions \
+  --config configs/atera_wta_breast_slide.yaml \
+  --checkpoint outputs/.../checkpoints/last.pt \
+  --seed-labels seed_labels.csv \
+  --classifier both \
+  --output outputs/.../auto_annotation
+```
+
+Same call from Python:
+
+```python
+from stgpt.runtime import annotate_regions
+
+result = annotate_regions(
+    config="configs/atera_wta_breast_slide.yaml",
+    checkpoint="outputs/.../checkpoints/last.pt",
+    seed_labels="seed_labels.csv",
+    output_dir="outputs/.../auto_annotation",
+    classifier="both",
+    write_probabilities=True,
+)
+```
+
+The contract is RFC 0002 (`docs/rfcs/0002-region-auto-annotation.md`).
+Predictions falling below the probability/entropy/distance thresholds are
+labelled `__abstain__` rather than guessed.
+
 ## H&E Evidence Workflow
 
 stGPT consumes contour H&E assets built by pyXenium/spatho. It can train with the default lightweight CNN, a frozen `timm`/Hugging Face pathology encoder, or a precomputed embedding store:
