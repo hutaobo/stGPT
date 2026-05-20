@@ -13,7 +13,7 @@ The primary runtime output is not required to be one embedding per cell. The pre
 ```text
 Contour or SpatialRegion embedding
   = registered H&E morphology for a contour or region
-  + Xenium molecular evidence from cells inside and near that contour
+  + measured spatial-transcriptomics molecular evidence from cells inside and near that contour
   + spatial position, shape, boundary, and neighbor context
   + optional structure or pathology context
   + QC, registration, and provenance metadata
@@ -57,7 +57,7 @@ Minimum qualifying capabilities:
 - Embed unseen contours and regions into a reusable morpho-molecular space.
 - Retrieve similar contours or regions across slides, cases, and batches.
 - Compare regions such as tumor versus stroma, boundary versus core, or immune-rich versus immune-poor niches.
-- Reconstruct or impute measured Xenium-panel signals at region level with imputation flags.
+- Reconstruct or impute measured platform-panel signals at region level with imputation flags.
 - Predict or score spatial niches and structure labels better than simple image-only, gene-only, and spatial-only baselines.
 - Explain a contour or region using traceable morphology, cell membership, marker summaries, and neighboring-region evidence.
 - Preserve useful behavior across held-out slides, held-out cases, batches, stains, and registration conditions.
@@ -66,7 +66,7 @@ Minimum qualifying capabilities:
 Non-goals for the first checkpoint:
 
 - Do not claim clinical diagnosis or treatment recommendation.
-- Do not claim whole-transcriptome prediction from a targeted Xenium panel.
+- Do not claim whole-transcriptome prediction from a targeted panel.
 - Do not treat imputed or reconstructed expression as measured expression.
 - Do not publish random cell-level splits as evidence of region-level generalization.
 - Do not emit biological conclusions without QC and provenance.
@@ -77,9 +77,9 @@ The contract layer should make contour/region modeling explicit. The preferred m
 
 Required contract objects:
 
-- `XeniumSlide`: one validated spatial transcriptomics case with cell expression, coordinates, metadata, and panel information.
+- `XeniumSlide`: one validated spatial transcriptomics case in the current pyXenium-backed store format, with cell expression, coordinates, platform metadata, and panel information.
 - `GenePanel`: measured genes, panel version, compatible checkpoints, missing-gene behavior, and panel fingerprints.
-- `SpatialTransform`: transforms between Xenium physical coordinates, registered analysis coordinates, and H&E pixel space.
+- `SpatialTransform`: transforms between physical spatial-transcriptomics coordinates, registered analysis coordinates, and H&E pixel space.
 - `HEPatch`: image patch reference, source image, crop coordinates, magnification or MPP, mask, and registration provenance.
 - `ContourRegion`: contour geometry, mask, bounding box, source segmentation, region label, and parent slide.
 - `CellEvidenceSet`: member cells, boundary cells, nearby cells, cell weights, and cell-level QC flags for one contour or region.
@@ -99,7 +99,7 @@ Required inputs:
 - Contour geometry from spatho, HistoSeg, or another segmentation source.
 - Cell centroids and, when available, cell boundaries.
 - H&E image reference and registration transform.
-- Xenium expression matrix and panel metadata.
+- Spatial transcriptomics expression matrix and platform panel metadata.
 - Optional structure labels, pathology labels, cluster labels, and manual review labels.
 
 Required construction steps:
@@ -131,7 +131,7 @@ A region example should contain:
 - Region image token from H&E crop or mask-aware patch encoder.
 - Shape and geometry tokens: area, perimeter, compactness, eccentricity, boundary features, and coordinates.
 - Cell tokens for sampled member cells.
-- Molecular summary tokens from measured Xenium expression.
+- Molecular summary tokens from measured spatial transcriptomics expression.
 - Boundary/context tokens from nearby cells or neighboring contours.
 - Optional structure or pathology-context tokens.
 - Optional slide, batch, stain, scanner, organ, and panel tokens for domain tracking.
@@ -280,7 +280,7 @@ Result status:
 
 Interpretation:
 
-- This milestone proves that the contour/region-level stGPT pipeline can run end-to-end on a frozen 43-case Xenium-centered corpus.
+- This milestone proves that the contour/region-level stGPT pipeline can run end-to-end on a frozen 43-case platform-aware corpus.
 - It should be described as a contour-level multimodal pipeline and evidence milestone, not as a finished foundation model.
 - The immediate model weakness is not global image-gene alignment; it is structure/label semantics, which were not optimized in the L3-43 Full M6 objective.
 - The next recommended experiment is a `structure_context_m6` run on the same frozen data. Virchow/UNI should start as a small smoke only if failure review indicates image encoder capacity is a likely bottleneck.
@@ -293,7 +293,7 @@ Paper-facing outputs:
 
 ## 11. Pathology Vocabulary and RAG Layer
 
-Pathology textbook or reference material should not be treated as the primary training data for the stGPT foundation embedding. The core representation should be learned from registered H&E morphology, measured Xenium molecular evidence, cell-to-contour membership, and spatial context.
+Pathology textbook or reference material should not be treated as the primary training data for the stGPT foundation embedding. The core representation should be learned from registered H&E morphology, measured spatial-transcriptomics molecular evidence, cell-to-contour membership, and spatial context.
 
 Pathology RAG tooling, such as [`hutaobo/pathology-rag-workbench`](https://github.com/hutaobo/pathology-rag-workbench), should instead be used as a vocabulary, ontology, explanation, and citation layer around the model.
 
@@ -327,7 +327,7 @@ Inappropriate uses:
 
 The stable contract should keep model evidence and textual reference evidence separate. A region explanation may cite both, but it must distinguish:
 
-- measured slide evidence from Xenium and H&E;
+- measured slide evidence from spatial transcriptomics and H&E;
 - model-derived reconstruction, imputation, embedding, retrieval, or scores;
 - reference-language evidence from pathology books, notes, or curated ontology entries.
 
@@ -369,7 +369,7 @@ Recommended implementation order:
 
 The first contour/region foundation prototype is acceptable when:
 
-- A real Xenium case can be converted into validated contour regions.
+- A real spatial transcriptomics case can be converted into validated contour regions.
 - Every region has deterministic cell membership and recorded assignment policy.
 - Every region embedding links to its H&E crop, transform, member cells, molecular summary, checkpoint, and QC status.
 - `stgpt embed-regions` writes region artifacts usable by spatho.
