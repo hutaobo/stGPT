@@ -1,10 +1,10 @@
-# Development Strategy: Xenium-First Image-Gene GPT for Spatial Transcriptomics
+# Development Strategy: Platform-Aware Image-Gene GPT for Spatial Transcriptomics
 
 This document captures the development direction for `stGPT` after reviewing closely related spatial transcriptomics, histopathology, agentic workbench, and foundation-model methods. It is a working engineering guide, not a full literature review. The landscape snapshot is current as of 2026-04-30.
 
 ## Project Positioning
 
-`stGPT` should be developed as a Xenium-first morpho-molecular foundation-model backend in development for spatial transcriptomics. The model should treat each cell or local spatial unit as a multimodal sequence built from:
+`stGPT` should be developed as a platform-aware morpho-molecular foundation-model backend in development for spatial transcriptomics. The model should treat each cell, contour, or local spatial unit as a multimodal sequence built from:
 
 - gene identity tokens and expression-value/bin embeddings
 - trainable H&E patch embeddings
@@ -18,7 +18,7 @@ The core pretraining and fine-tuning objectives should remain aligned with this 
 - image-gene contrastive learning to align morphology with expression
 - compact cell or region embeddings for downstream pathology and spatial biology workflows
 
-This makes `stGPT` different from a pure H&E-to-expression regressor. The goal is to build a reusable representation model for Xenium-centered spatial pathology, with expression prediction as one important evaluation task rather than the whole product.
+This makes `stGPT` different from a pure H&E-to-expression regressor. The goal is to build a reusable representation model for platform-aware spatial pathology across measured ST data such as Xenium and Atera, with expression prediction as one important evaluation task rather than the whole product.
 
 The stronger platform framing is a closed evidence loop:
 
@@ -72,11 +72,11 @@ Plan -> Tool Calls -> QC/Critic -> Evidence Graph -> Report -> Human Review -> M
 - [`scGPT-spatial`](https://github.com/bowang-lab/scGPT-spatial) extends scGPT through continual pretraining for spatial transcriptomics, with spatially aware sampling and neighborhood-oriented objectives. The relevant preprint is [scGPT-spatial: Continual Pretraining of Single-Cell Foundation Model for Spatial Transcriptomics](https://doi.org/10.1101/2025.02.05.636714). This is the closest gene-token foundation-model reference, but it does not make trainable H&E patch context the central input.
 - [`STPath`](https://www.nature.com/articles/s41746-025-02020-3) is a generative foundation model for integrating spatial transcriptomics and whole-slide images. It uses a geometry-aware Transformer and masked gene expression prediction over large-scale WSI-ST data. It validates that masked generative objectives are now a strong direction for ST-pathology models.
 - [`STORM`](https://arxiv.org/abs/2604.03630) is a multimodal foundation model of spatial transcriptomics and histology for biological discovery and clinical prediction. Its platform-agnostic framing across Visium, Xenium, Visium HD, and CosMx is an important signal that cross-platform evaluation will matter.
-- [`ST-Align`](https://arxiv.org/abs/2411.16793) is an image-gene alignment foundation model for spatial transcriptomics. It emphasizes spatial context, spot-niche alignment, multi-scale alignment, and few-shot/zero-shot transfer. This supports the need for image-gene alignment in `stGPT`, while `stGPT` should keep a tighter Xenium-native reconstruction objective.
+- [`ST-Align`](https://arxiv.org/abs/2411.16793) is an image-gene alignment foundation model for spatial transcriptomics. It emphasizes spatial context, spot-niche alignment, multi-scale alignment, and few-shot/zero-shot transfer. This supports the need for image-gene alignment in `stGPT`, while `stGPT` should keep a tighter platform-aware, panel-aware reconstruction objective.
 - [`OmiCLIP/Loki`](https://www.nature.com/articles/s41592-025-02707-1) builds a visual-omics foundation model that bridges H&E histology and spatial transcriptomics, then uses the aligned space for tissue alignment, annotation, retrieval, cell-type decomposition, and ST expression prediction. This is the strongest CLIP-style reference for cross-modal image-expression retrieval.
 - [`SEAL`](https://arxiv.org/abs/2602.14177) performs Spatial Expression-Aligned Learning as parameter-efficient ST-guided fine-tuning of pathology vision encoders. The gated model card is available at [`MahmoodLab/SEAL`](https://huggingface.co/MahmoodLab/SEAL). SEAL supports the idea that localized molecular supervision improves pathology encoders, but its primary product is a better vision model rather than a gene-token GPT.
 
-### Xenium-specific and task-specific neighbors
+### Platform-specific and task-specific neighbors
 
 - [`H&Enium`](https://openreview.net/forum?id=W64NsKUpMy) aligns H&E image embeddings and transcriptomic foundation embeddings at single-cell resolution with contrastive learning. It is an important single-cell Xenium-adjacent reference for alignment, but it is closer to an embedding-alignment framework than a unified generative sequence model.
 - [`xMINT`](https://openreview.net/forum?id=hnYLq2lwOv) is a Multimodal Integration Transformer for Xenium gene imputation. It is directly relevant to Xenium panel expansion and imputation, but its task scope is narrower than the desired `stGPT` representation-learning agenda.
@@ -101,7 +101,7 @@ These methods may not all use H&E as a core modality, but they define the baseli
 ## Strategic Judgments
 
 1. `stGPT` should not compete as another generic H&E-to-expression predictor. That space already includes strong large-scale models and specialized prediction methods.
-2. The project should differentiate on Xenium-native modeling: cell-level or subcellular-resolution assumptions, panel-aware gene vocabularies, imaging-based ST quirks, and practical adapter quality.
+2. The project should differentiate on platform-aware modeling: cell-level or subcellular-resolution assumptions where available, panel-aware gene vocabularies, imaging-based ST quirks, and practical adapter quality.
 3. The model should fuse H&E, spatial, structure/context, and gene tokens inside a unified Transformer rather than relying only on late feature concatenation.
 4. The training recipe should preserve both reconstruction and alignment objectives: masked gene reconstruction, neighborhood reconstruction, and image-gene contrastive loss should remain first-class.
 5. spatho-derived H&E patch manifests and structure assignments should become a strategic advantage, because they provide explicit pathology context that many image-gene models leave implicit.
@@ -109,9 +109,9 @@ These methods may not all use H&E as a core modality, but they define the baseli
 
 ## Development Priorities
 
-- Build robust Xenium ingestion and validation first: coordinates, gene names, panel metadata, cell IDs, optional morphology assets, and reproducible AnnData export.
-- Make `XeniumSlide` the canonical real-data contract before model scaling: sparse cell-gene matrix, centroid/boundary geometry, panel metadata, aligned H&E transform metadata, contour polygons, cell-to-contour assignments, and batch/slide/patient/organ/stain/scanner metadata should travel together.
-- Use contour-segmented H&E crops as the first real image learning units for Atera Xenium, not per-cell crops. This keeps image context auditable and aligned with spatho-style structure evidence.
+- Build robust spatial transcriptomics ingestion and validation first: coordinates, gene names, panel metadata, cell IDs, optional morphology assets, platform metadata, and reproducible AnnData export.
+- Keep `XeniumSlide` as the current pyXenium-backed real-data contract while making it platform-aware before model scaling: sparse cell-gene matrix, centroid/boundary geometry, panel metadata, aligned H&E transform metadata, contour polygons, cell-to-contour assignments, and batch/slide/patient/organ/stain/scanner/platform metadata should travel together.
+- Use contour-segmented H&E crops as the first real image learning units for Xenium and Atera data, not per-cell crops. This keeps image context auditable and aligned with spatho-style structure evidence.
 - Treat `stgpt validate-data` as the first real-data gate: it should write a case manifest, QC reports, and deterministic splits before any paper-facing training run.
 - Treat `stgpt evaluate` as the second gate: it should consume the QC split file and write reconstruction, retrieval, and embedding-quality artifacts for every paper-facing checkpoint.
 - Package successful checkpoints as spatho-compatible model backends with `stgpt package-model`, `stgpt spatho-embed`, and the `stgpt.runtime` API, keeping the external `spatho` package optional.
@@ -121,7 +121,7 @@ These methods may not all use H&E as a core modality, but they define the baseli
 - Implement baseline comparisons against the closest method families: scGPT-spatial-style gene/spatial objectives, STPath/STORM-style masked expression prediction, ST-Align/OmiCLIP-style contrastive alignment, and xMINT-style Xenium imputation.
 - Treat objective ablations as required evidence: `stgpt train --ablation gene_only`, `image_only`, `spatial_only`, `image_gene`, `image_gene_spatial`, and `full` should be run from the same data split before making claims.
 - Add explicit handling for batch effects and domain shift: case-level splits, slide-level splits, organ/tissue holdouts, platform holdouts where possible, and staining variation checks.
-- Define a panel and vocabulary strategy: fixed panel vocabularies for Xenium smoke tests, configurable gene vocabularies for real studies, and clear behavior for missing or out-of-panel genes.
+- Define a panel and vocabulary strategy: fixed panel vocabularies for smoke tests, configurable platform-specific gene vocabularies for real studies, and clear behavior for missing or out-of-panel genes.
 - Keep failure analysis next to metrics: every evaluation should report patch coverage, missing images, registration traceability, panel mismatch, and available batch/slide/domain keys.
 - Keep the public package practical: CPU smoke tests, small synthetic fixtures, documented real-data adapters, and compact exported embeddings for downstream pathology workflows.
 - Keep guardrails explicit: `spatho` should not generate biological conclusions from stGPT evidence when QC reports fatal errors, and model-derived imputation or reconstruction must never be labeled as measured expression.
@@ -134,14 +134,14 @@ These methods may not all use H&E as a core modality, but they define the baseli
 - H&E registration quality is a major failure mode. The development workflow should record image alignment assumptions and expose quality-control hooks rather than treating image patches as automatically correct.
 - Ablation comparisons are only valid when they reuse the same QC-generated split file, seed, panel policy, and patch provenance contract.
 - Gated and non-commercial datasets/models may limit reproducibility. Public smoke tests and open synthetic fixtures should remain part of the core repo even when larger benchmarks use restricted assets.
-- Large foundation models may outperform `stGPT` on generic expression prediction. The project should win by being transparent, Xenium-aware, easy to run, and useful for downstream spatial pathology evidence generation.
+- Large foundation models may outperform `stGPT` on generic expression prediction. The project should win by being transparent, platform-aware, easy to run, and useful for downstream spatial pathology evidence generation.
 
 ## Near-Term Development Definition of Done
 
 The next development phase should be considered successful when `stGPT` can:
 
-- load a real Xenium case through the optional adapter
-- build the Atera Breast and Cervical WTA cases into `XeniumSlide` stores before training
+- load a real spatial transcriptomics case through the optional adapter
+- build the Atera Breast and Cervical WTA cases, plus supported Xenium cases, into platform-aware `XeniumSlide` stores before training
 - validate the case with `stgpt validate-data` and inspect the QC report before training
 - attach reproducible H&E patch and structure/context metadata
 - train the image-gene Transformer with reconstruction and contrastive objectives
