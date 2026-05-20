@@ -1,11 +1,11 @@
 # stGPT
 
-`stGPT` is a Xenium-first morpho-molecular foundation-model backend in development for spatial transcriptomics. It is designed as a clean, independent package inspired by [`bowang-lab/scGPT-spatial`](https://github.com/bowang-lab/scGPT-spatial), while adding trainable H&E image context and hooks for pyXenium and spatho evidence. The target claim is reusable Xenium-centered spatial pathology embeddings, not just another H&E-to-expression regressor.
+`stGPT` is a platform-aware morpho-molecular foundation-model backend in development for spatial transcriptomics. It is designed as a clean, independent package inspired by [`bowang-lab/scGPT-spatial`](https://github.com/bowang-lab/scGPT-spatial), while adding trainable H&E image context and hooks for pyXenium and spatho evidence. The target claim is reusable contour/region-level spatial pathology embeddings across measured ST platforms, currently evaluated on Xenium and Atera, not just another H&E-to-expression regressor.
 
 The first implementation target is deliberately practical:
 
 - load small synthetic fixtures for CPU smoke tests
-- load real Xenium data through optional `pyXenium`
+- load real spatial transcriptomics data, including Xenium and Atera, through optional `pyXenium`
 - consume spatho H&E contour patch manifests when present
 - train a lightweight contour/region-level image-gene Transformer prototype
 - export region embeddings and provenance artifacts for downstream spatial pathology workflows
