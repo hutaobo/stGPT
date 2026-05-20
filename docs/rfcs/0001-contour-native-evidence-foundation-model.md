@@ -6,9 +6,9 @@
 
 ## 1. Motivation
 
-stGPT should become a contour-native, morphology-grounded spatial foundation model for Xenium. The project is not only learning tissue representations; it is building a reproducible loop from contour-level evidence tokens to human-reviewed pathology knowledge.
+stGPT should become a contour-native, morphology-grounded, platform-aware spatial foundation model for spatial transcriptomics data such as Xenium and Atera. The project is not only learning tissue representations; it is building a reproducible loop from contour-level evidence tokens to human-reviewed pathology knowledge.
 
-Existing graph-based spatial transcriptomics models, such as Novae, show that spatial domain foundation models can learn reusable tissue organization from molecular neighborhoods. stGPT should use that lesson without becoming a graph model clone. Its differentiator is the native fusion of measured Xenium expression, contour-grounded H&E morphology, physical spatial context, provenance, and agentic evidence reporting.
+Existing graph-based spatial transcriptomics models, such as Novae, show that spatial domain foundation models can learn reusable tissue organization from molecular neighborhoods. stGPT should use that lesson without becoming a graph model clone. Its differentiator is the native fusion of measured platform expression, contour-grounded H&E morphology, physical spatial context, provenance, and agentic evidence reporting.
 
 The target platform narrative is:
 
@@ -21,7 +21,7 @@ spatho-agent turns evidence tokens into queryable, human-reviewed pathology evid
 The short research claim is:
 
 ```text
-stGPT is a morphology-grounded spatial foundation model for Xenium.
+stGPT is a platform-aware, morphology-grounded spatial foundation model for spatial transcriptomics.
 ```
 
 The product claim is:
@@ -55,7 +55,7 @@ row_index is the global join key; everything else is metadata.
 Every training and evidence artifact must be joinable through `row_index`, `contour_id`, `slide_id`, and an artifact fingerprint. The physical data contract is:
 
 ```text
-Xenium AnnData/Zarr      -> measured molecular evidence
+Spatial transcriptomics AnnData/Zarr -> measured molecular evidence
 Contour image store      -> object/context/shape evidence
 Contour manifest Parquet -> provenance, graph indices, QC, and row indexing
 stGPT data loader        -> late materialization into bottleneck tokens
@@ -390,7 +390,7 @@ A correction event should be append-only:
   "row_index": 10231,
   "contour_id": "contour_A",
   "slide_id": "slide_07",
-  "checkpoint_id": "stgpt-xenium-v0.3",
+  "checkpoint_id": "stgpt-platform-v0.3",
   "prototype_bank_id": "pb-v4",
   "ai_domain": "tumor_stroma_interface",
   "human_label": "inflammatory_infiltrate",
@@ -454,9 +454,9 @@ The system must treat failure modes as first-class evidence, not as hidden cavea
 
 ### Sequence length explosion
 
-Xenium neighborhoods can be dense. Neighbor cells or contours must not be flattened into unbounded Transformer tokens. Use local pooling or 1 to 4 neighborhood bottleneck tokens.
+High-plex spatial transcriptomics neighborhoods can be dense. Neighbor cells or contours must not be flattened into unbounded Transformer tokens. Use local pooling or 1 to 4 neighborhood bottleneck tokens.
 
-### H&E and Xenium registration failures
+### H&E and spatial transcriptomics registration failures
 
 Registration quality gates must run before image-gene claims. Low registration confidence should block or downgrade morphology-grounded claims.
 
@@ -495,7 +495,7 @@ Every output must label measured evidence and model-derived evidence separately.
 
 The RFC is considered implemented when:
 
-- A real Xenium case can be validated through a packed contour image store and Parquet manifest.
+- A real spatial transcriptomics case can be validated through a packed contour image store and Parquet manifest.
 - Training does not read per-contour PNG or JSON files except in smoke or debug mode.
 - The data loader retrieves contour image, gene, geometry, and neighbor evidence through `row_index`.
 - Neighbor graph retrieval during training is O(1) lookup from fixed-shape arrays.
@@ -503,4 +503,3 @@ The RFC is considered implemented when:
 - Prototype-bank version, assignment confidence, and utilization metrics are exported.
 - spatho-agent evidence chains separate measured evidence from model-derived evidence.
 - Human corrections are append-only events and can be replayed into a curated annotation bank.
-
