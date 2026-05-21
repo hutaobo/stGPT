@@ -421,7 +421,9 @@ def test_xenium_slide_mode_uses_contour_patch_context_and_validates(tmp_path: Pa
             include_structure_context=True,
         ),
         model=ModelConfig(d_model=32, n_heads=4, n_layers=1, max_genes=4, image_size=32, n_expression_bins=8),
-        training=TrainingConfig(batch_size=2, max_steps=1, output_dir=str(tmp_path / "train"), device="cpu"),
+        training=TrainingConfig(
+            batch_size=2, max_steps=1, output_dir=str(tmp_path / "train"), device="cpu", structure_loss_weight=0.0
+        ),
     )
     case = build_training_case(cfg)
     dataset = ImageGeneDataset(case, cfg)

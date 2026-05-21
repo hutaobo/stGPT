@@ -38,7 +38,7 @@ training:
   neighborhood_k: 8
   image_gene_loss_weight: 0.01
   neighborhood_loss_weight: 0.25
-  structure_loss_weight: 0.1
+  structure_loss_weight: 0.0  # conditioning experiment: structure is fed as input, so it must not also be a prediction target (label leak)
   prototype_loss_weight: 0.1
   image_gene_loss_warmup_steps: 1000
   structure_loss_warmup_steps: 1000

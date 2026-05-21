@@ -26,7 +26,9 @@ def _config(tmp_path: Path, *, include_structure_context: bool = False) -> StGPT
             seed=7,
         ),
         model=ModelConfig(d_model=32, n_heads=4, n_layers=1, max_genes=12, image_size=32, n_expression_bins=8),
-        training=TrainingConfig(batch_size=4, max_steps=1, output_dir=str(tmp_path / "train"), device="cpu", seed=11),
+        training=TrainingConfig(
+            batch_size=4, max_steps=1, output_dir=str(tmp_path / "train"), device="cpu", seed=11, structure_loss_weight=0.0
+        ),
         split=SplitConfig(seed=13),
     )
 

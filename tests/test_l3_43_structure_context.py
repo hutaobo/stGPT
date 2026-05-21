@@ -7,7 +7,7 @@ import yaml
 from stgpt.config import StGPTConfig
 
 
-def test_structure_context_m6_config_enables_structure_objective(monkeypatch) -> None:
+def test_structure_context_m6_config_conditions_on_structure_without_leak(monkeypatch) -> None:
     repo = Path(__file__).resolve().parents[1]
     monkeypatch.setenv("STGPT_OUTPUT_ROOT", str(repo / "outputs"))
     monkeypatch.setenv("STGPT_XENIUM_SLIDES", str(repo / "outputs" / "xenium_slides"))
@@ -20,8 +20,9 @@ def test_structure_context_m6_config_enables_structure_objective(monkeypatch) ->
     assert cfg.model.use_structure_context is True
     assert cfg.model.use_image_context is True
     assert cfg.model.use_spatial_context is True
-    assert cfg.training.structure_loss_weight > 0.0
-    assert cfg.training.structure_loss_warmup_steps == 1000
+    # Structure is fed as an input context token, so it must NOT also be a
+    # prediction target (that would let the structure head copy the input).
+    assert cfg.training.structure_loss_weight == 0.0
     assert cfg.training.image_gene_loss_weight == 0.01
     assert cfg.split.strategy == "slide_holdout"
 

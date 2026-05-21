@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from stgpt.config import ModelConfig, StGPTConfig
+from stgpt.config import DataConfig, ModelConfig, StGPTConfig, TrainingConfig
 
 
 def test_config_env_expansion(tmp_path: Path, monkeypatch) -> None:
@@ -74,3 +74,30 @@ def test_apply_ablation_sets_modalities_and_losses() -> None:
     assert not gene_only.model.use_spatial_context
     assert gene_only.training.image_gene_loss_weight == 0.0
     assert gene_only.training.neighborhood_loss_weight == 0.0
+
+
+def test_structure_label_leak_is_rejected() -> None:
+    # Feeding the structure label as an input token while also predicting it lets
+    # the structure head trivially copy the input -> must be rejected.
+    with pytest.raises(ValidationError):
+        StGPTConfig(
+            data=DataConfig(include_structure_context=True),
+            model=ModelConfig(use_structure_context=True),
+            training=TrainingConfig(structure_loss_weight=0.1),
+        )
+
+    # Conditioning on structure without predicting it is allowed.
+    conditioning = StGPTConfig(
+        data=DataConfig(include_structure_context=True),
+        model=ModelConfig(use_structure_context=True),
+        training=TrainingConfig(structure_loss_weight=0.0),
+    )
+    assert conditioning.data.include_structure_context is True
+
+    # Predicting structure without feeding the label is allowed.
+    predicting = StGPTConfig(
+        data=DataConfig(include_structure_context=False),
+        model=ModelConfig(use_structure_context=True),
+        training=TrainingConfig(structure_loss_weight=0.1),
+    )
+    assert predicting.training.structure_loss_weight == 0.1

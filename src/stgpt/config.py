@@ -212,6 +212,22 @@ class StGPTConfig(BaseModel):
     training: TrainingConfig = Field(default_factory=TrainingConfig)
     split: SplitConfig = Field(default_factory=SplitConfig)
 
+    @model_validator(mode="after")
+    def _reject_structure_label_leak(self) -> StGPTConfig:
+        if (
+            self.data.include_structure_context
+            and self.model.use_structure_context
+            and self.training.structure_loss_weight > 0.0
+        ):
+            raise ValueError(
+                "Structure label leak: include_structure_context feeds the structure label as "
+                "an input token while structure_loss_weight>0 trains the model to predict that "
+                "same label, so the structure head can trivially copy the input. Choose one: set "
+                "data.include_structure_context=false to predict structure honestly, or set "
+                "training.structure_loss_weight=0.0 to condition on structure without predicting it."
+            )
+        return self
+
     @classmethod
     def from_file(cls, path: str | Path, *, preset: str | None = None) -> StGPTConfig:
         config_path = Path(path).expanduser().resolve()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -60,6 +61,34 @@ class PatchEncoder(nn.Module):
                 scaled = F.avg_pool2d(image, kernel_size=scale, stride=scale, ceil_mode=True)
             features.append(self.net(scaled))
         return self.fusion(torch.cat(features, dim=1) if len(features) > 1 else features[0])
+
+
+class SpatialEncoder(nn.Module):
+    """Encode 2D region coordinates with multi-frequency Fourier features.
+
+    A single ``Linear(2, d_model)`` cannot represent high-frequency spatial
+    structure.  Lifting the (x, y) coordinates into sinusoids at several
+    frequencies (NeRF-style positional encoding) before projecting lets the
+    model express both coarse position and finer spatial variation.
+    """
+
+    def __init__(self, d_model: int, *, n_frequencies: int = 6) -> None:
+        super().__init__()
+        self.n_frequencies = int(max(0, n_frequencies))
+        if self.n_frequencies > 0:
+            frequencies = (2.0 ** torch.arange(self.n_frequencies, dtype=torch.float32)) * math.pi
+            self.register_buffer("frequencies", frequencies, persistent=False)
+        feature_dim = 2 + 2 * 2 * self.n_frequencies
+        self.proj = nn.Sequential(nn.Linear(feature_dim, d_model), nn.GELU(), nn.LayerNorm(d_model))
+
+    def forward(self, spatial: Tensor) -> Tensor:
+        spatial = spatial.float()
+        if self.n_frequencies == 0:
+            return self.proj(spatial)
+        scaled = spatial.unsqueeze(-1) * self.frequencies.to(spatial.device)
+        sin = torch.sin(scaled).flatten(start_dim=1)
+        cos = torch.cos(scaled).flatten(start_dim=1)
+        return self.proj(torch.cat([spatial, sin, cos], dim=-1))
 
 
 ImageEncoderBackend = Literal["cnn", "timm", "hf", "precomputed"]
@@ -538,9 +567,10 @@ class ImageGeneSTGPT(nn.Module):
             image_encoder_frozen=image_encoder_frozen,
             image_embedding_dim=image_embedding_dim,
         )
-        self.spatial_encoder = nn.Sequential(nn.Linear(2, d_model), nn.GELU(), nn.LayerNorm(d_model))
+        self.spatial_encoder = SpatialEncoder(d_model)
         self.context_embedding = nn.Embedding(self.n_structures + 1, d_model, padding_idx=0)
         self.cell_context_norm = nn.LayerNorm(d_model)
+        self.cell_value_gate = nn.Linear(d_model, 1)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
@@ -784,10 +814,16 @@ class ImageGeneSTGPT(nn.Module):
         else:
             cell_token_mask = cell_token_mask.to(device)
         cell_values = self.expression_value(cell_expr_values.unsqueeze(-1))
-        cell_gene_tokens = gene_tok.unsqueeze(1) + cell_values
+        per_gene = gene_tok.unsqueeze(1) + cell_values
         gene_mask = gene_tok.abs().sum(dim=-1).gt(0).float()
-        denom = gene_mask.sum(dim=1, keepdim=True).clamp_min(1.0).unsqueeze(-1)
-        tokens = (cell_gene_tokens * gene_mask[:, None, :, None]).sum(dim=2) / denom
+        # Expression-dependent per-gene weight. Because the gate depends on each
+        # gene's value and multiplies that gene's token, the pooled vector keeps
+        # the gene<->value pairing that a plain mean would average away (a plain
+        # mean separates into mean(gene_tok)+mean(value), making two cells that
+        # express different genes at the same levels collapse to one token).
+        gate = F.softplus(self.cell_value_gate(cell_values)).squeeze(-1) * gene_mask.unsqueeze(1)
+        denom = gate.sum(dim=2, keepdim=True).clamp_min(1e-6)
+        tokens = (per_gene * gate.unsqueeze(-1)).sum(dim=2) / denom
         tokens = self.cell_context_norm(tokens)
         tokens = torch.where(cell_token_mask.unsqueeze(-1), torch.zeros_like(tokens), tokens)
         return tokens, cell_token_mask
