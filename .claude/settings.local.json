@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(if \\(Test-Path $HOME\\\\.ssh\\\\config\\) { Get-Content $HOME\\\\.ssh\\\\config } else { \"No SSH config\" })",
+      "PowerShell(ssh -o BatchMode=yes -o ConnectTimeout=10 sscb-a100.scilifelab.se \"ls -la /data/taobo.hu/projects/stgpt_l3_20260504/ 2>&1 | head -50\")",
+      "Bash(ls \"C:\\\\Users\\\\taobo.hu\\\\.claude\" 2>&1 | head -50)",
+      "Bash(ls \"C:\\\\Users\\\\taobo.hu\\\\.claude\\\\skills\" 2>&1 | head -30)",
+      "Bash(where python *)",
+      "Bash(where node *)",
+      "Bash(where npx *)",
+      "Bash(where uv *)",
+      "WebFetch(domain:github.com)",
+      "Bash(claude mcp *)",
+      "PowerShell(\\(Get-Command claude -ErrorAction SilentlyContinue\\).Source)",
+      "PowerShell(claude --version)",
+      "PowerShell(Get-ChildItem \"$env:APPDATA\\\\npm\\\\node_modules\" -ErrorAction SilentlyContinue | Select-Object Name | Sort-Object Name)",
+      "PowerShell(Get-ChildItem \"$env:USERPROFILE\\\\.claude\\\\skills\" -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -in @\\('scientific-visualization','matplotlib','seaborn','plotly','scanpy','squidpy','scvi-tools','anndata','plotnine','scientific-schematics'\\) } | Select-Object Name, FullName)",
+      "WebFetch(domain:pypi.org)",
+      "PowerShell(& \"$env:LOCALAPPDATA\\\\miniconda3\\\\Scripts\\\\conda.exe\" --version 2>&1; & \"$env:LOCALAPPDATA\\\\miniconda3\\\\Scripts\\\\conda.exe\" env list 2>&1)",
+      "PowerShell(& \"$env:LOCALAPPDATA\\\\miniconda3\\\\Scripts\\\\conda.exe\" create -y -n mcp-plotnine python=3.11 2>&1 | Select-Object -Last 15)",
+      "PowerShell($py = \"$env:LOCALAPPDATA\\\\miniconda3\\\\envs\\\\mcp-plotnine\\\\python.exe\"; & $py -m pip install -e \"$env:USERPROFILE\\\\.claude\\\\mcp-servers\\\\plotnine-mcp[full]\" 2>&1 | Select-Object -Last 25)",
+      "PowerShell($py = \"$env:LOCALAPPDATA\\\\miniconda3\\\\envs\\\\mcp-plotnine\\\\python.exe\"; & $py -c \"import sys; print\\('PYTHON:', sys.executable\\); print\\('PREFIX:', sys.prefix\\)\"; \"--- pip show location ---\"; & $py -m pip show plotnine-mcp 2>&1 | Select-String \"Location|Name|Version\")",
+      "PowerShell($py = \"$env:LOCALAPPDATA\\\\miniconda3\\\\envs\\\\mcp-plotnine\\\\python.exe\"; & $py -c \"import plotnine_mcp.server as s; print\\('import OK'\\); print\\('has main:', hasattr\\(s,'main'\\)\\)\" 2>&1 | Select-Object -Last 15)"
+    ]
+  }
+}
