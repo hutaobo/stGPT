@@ -89,8 +89,8 @@ def _model_metadata(
     data = cfg.get("data", {}) if isinstance(cfg, dict) else {}
     training_provenance = _training_provenance(evaluation_path)
     return {
-        "model_name": model_name or "stgpt-xenium-demo",
-        "model_type": "Xenium-first morpho-molecular foundation-model backend in development",
+        "model_name": model_name or "stgpt-region-demo",
+        "model_type": "Image-gene structure-context model backend for spatial transcriptomics",
         "model_version": payload.get("model_version", _stgpt_version()),
         "checkpoint": PACKAGED_CHECKPOINT,
         "source_checkpoint": str(checkpoint_path),
@@ -108,7 +108,7 @@ def _model_metadata(
         "structure_names": payload.get("structure_names", []),
         "training_summary": payload.get("training_summary", {}),
         "intended_use": (
-            "Generate auditable morpho-molecular embeddings for Xenium-centered spatial pathology workflows."
+            "Generate auditable morpho-molecular embeddings for spatial transcriptomics and spatial pathology workflows."
         ),
         "limitations": [
             "Not a diagnostic device.",
@@ -124,7 +124,7 @@ def _model_card(metadata: dict[str, Any]) -> str:
     split = provenance.get("split", {}) if isinstance(provenance, dict) else {}
     return f"""# {metadata["model_name"]}
 
-This packaged stGPT checkpoint is a Xenium-first morpho-molecular foundation-model backend in development.
+This packaged stGPT checkpoint links tissue images, gene expression, and structure context for spatial transcriptomics.
 
 ## Intended Use
 
