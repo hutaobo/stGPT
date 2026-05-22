@@ -131,6 +131,8 @@ def test_f2_pdf_uses_editable_truetype_fonts(tmp_path: Path) -> None:
     result = plot_ablation_comparison(frame, tmp_path, formats=("pdf",))
 
     pdf_bytes = Path(result["artifacts"]["pdf"]).read_bytes()
-    # Type 42 (TrueType) embedding shows up as subset-prefixed Arial BaseFonts;
-    # the matplotlib Type 3 default would not embed a named TrueType font.
-    assert b"Arial" in pdf_bytes
+    # The matplotlib default Type 3 path font is not editable as text in
+    # Illustrator. Type 42/CIDFontType2 remains editable and is portable across
+    # machines even when Arial is unavailable and DejaVu Sans is used instead.
+    assert b"/Subtype /Type3" not in pdf_bytes
+    assert b"CIDFontType2" in pdf_bytes or b"/FontFile2" in pdf_bytes
