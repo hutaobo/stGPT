@@ -779,7 +779,7 @@ def _stratified_fold_indices(labels: np.ndarray, *, n_folds: int, rng: np.random
 
 def _classification_report(true: np.ndarray, pred: np.ndarray, *, n_classes: int, effective_folds: int) -> dict[str, Any]:
     confusion = np.zeros((n_classes, n_classes), dtype=np.int64)
-    for t, p in zip(true.tolist(), pred.tolist()):
+    for t, p in zip(true.tolist(), pred.tolist(), strict=True):
         if p < 0:
             continue
         confusion[int(t), int(p)] += 1
@@ -846,7 +846,7 @@ def _evidence_prefix(cfg: StGPTConfig, checkpoint_path: Path, seeds_path: Path) 
 
 
 def _evidence_id(prefix: str, region_id: str) -> str:
-    return "ann_" + hashlib.sha256(f"{prefix}|{region_id}".encode("utf-8")).hexdigest()[:16]
+    return "ann_" + hashlib.sha256(f"{prefix}|{region_id}".encode()).hexdigest()[:16]
 
 
 def _config_hash(cfg: StGPTConfig) -> str:
