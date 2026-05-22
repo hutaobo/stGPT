@@ -11,6 +11,7 @@ import torch
 import typer
 
 from . import __version__
+from .annotation import annotate_regions as annotate_regions_backend
 from .config import StGPTConfig
 from .contour_store import pack_contour_patches
 from .data import build_training_manifest
@@ -372,6 +373,40 @@ def embed_regions_command(
     cfg = StGPTConfig.from_file(config)
     result = run_spatho_export(cfg, checkpoint=model, output_dir=output, batch_size=batch_size, device=device)
     typer.echo(json.dumps(result.to_dict(), indent=2))
+
+
+@app.command("annotate-regions")
+def annotate_regions_command(
+    config: Annotated[Path, typer.Option("--config", "-c", exists=True)],
+    checkpoint: Annotated[Path, typer.Option("--checkpoint", "-k", exists=True)],
+    seed_labels: Annotated[Path, typer.Option("--seed-labels", "-s", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    region_ids: Annotated[Path | None, typer.Option("--region-ids", exists=True)] = None,
+    include_no_image: Annotated[bool, typer.Option("--include-no-image/--require-image")] = False,
+    classifier: Annotated[str, typer.Option("--classifier")] = "both",
+    abstain_prob: Annotated[float, typer.Option("--abstain-prob", min=0.0, max=1.0)] = 0.5,
+    write_probabilities: Annotated[bool, typer.Option("--write-probabilities/--no-probabilities")] = False,
+    seed_folds: Annotated[int, typer.Option("--seed-folds", min=2)] = 5,
+    rng_seed: Annotated[int, typer.Option("--rng-seed")] = 42,
+    batch_size: Annotated[int, typer.Option("--batch-size", min=1)] = 32,
+    device: Annotated[str, typer.Option("--device")] = "auto",
+) -> None:
+    result = annotate_regions_backend(
+        config=config,
+        checkpoint=checkpoint,
+        seed_labels=seed_labels,
+        output_dir=output,
+        region_ids=region_ids,
+        include_no_image=include_no_image,
+        classifier=classifier,  # type: ignore[arg-type]
+        abstain_prob=abstain_prob,
+        write_probabilities=write_probabilities,
+        seed_folds=seed_folds,
+        rng_seed=rng_seed,
+        batch_size=batch_size,
+        device=device,
+    )
+    typer.echo(json.dumps(result, indent=2))
 
 
 @app.command("export-spatho")

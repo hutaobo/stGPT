@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+from ..annotation import annotate_regions as _annotate_regions
 from ..config import StGPTConfig
 from ..evaluation import evaluate
 from ..foundation import package_model
@@ -85,7 +86,42 @@ def export_spatho_artifacts(
     )
 
 
+def annotate_regions(
+    *,
+    config: StGPTConfig | str | Path,
+    checkpoint: str | Path,
+    seed_labels: str | Path,
+    output_dir: str | Path,
+    region_ids: str | Path | None = None,
+    include_no_image: bool = False,
+    classifier: Literal["structure_head", "prototype_knn", "both"] = "both",
+    abstain_prob: float = 0.5,
+    write_probabilities: bool = False,
+    seed_folds: int = 5,
+    rng_seed: int = 42,
+    batch_size: int = 32,
+    device: str = "auto",
+) -> dict[str, Any]:
+    """Propagate sparse expert structure labels to unannotated regions."""
+    return _annotate_regions(
+        config=config,
+        checkpoint=checkpoint,
+        seed_labels=seed_labels,
+        output_dir=output_dir,
+        region_ids=region_ids,
+        include_no_image=include_no_image,
+        classifier=classifier,
+        abstain_prob=abstain_prob,
+        write_probabilities=write_probabilities,
+        seed_folds=seed_folds,
+        rng_seed=rng_seed,
+        batch_size=batch_size,
+        device=device,
+    )
+
+
 __all__ = [
+    "annotate_regions",
     "embed_cells",
     "embed_regions",
     "evaluate_checkpoint",
