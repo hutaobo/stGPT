@@ -80,7 +80,7 @@ def build_latent_manifold(
             n_embedding_dims=len(emb_cols),
             missing_runs=missing_runs,
             frame=projected,
-            diagnostics=diagnostics | _neighbor_diagnostics(matrix, projected),
+            diagnostics=diagnostics | _neighbor_diagnostics(matrix, projected, seed=seed),
         )
 
     html_frame, html_sampling = _sample_html_points(projected, max_html_points=max_html_points, seed=seed)
@@ -246,9 +246,33 @@ def _pca_project(matrix: np.ndarray) -> np.ndarray:
     return coords[:, :2].astype(np.float32)
 
 
-def _neighbor_diagnostics(matrix: np.ndarray, frame: pd.DataFrame) -> dict[str, Any]:
+def _neighbor_diagnostics(
+    matrix: np.ndarray,
+    frame: pd.DataFrame,
+    *,
+    max_points: int = 5000,
+    seed: int = 0,
+) -> dict[str, Any]:
     if matrix.shape[0] <= 1 or frame.empty:
         return {}
+    diagnostics: dict[str, Any] = {
+        "neighbor_diagnostic_points": int(matrix.shape[0]),
+        "neighbor_diagnostic_total_points": int(matrix.shape[0]),
+        "neighbor_diagnostic_sampling": "all",
+    }
+    if max_points > 0 and matrix.shape[0] > max_points:
+        total_points = int(matrix.shape[0])
+        rng = np.random.default_rng(seed)
+        selected = np.sort(rng.choice(matrix.shape[0], size=max_points, replace=False))
+        matrix = matrix[selected]
+        frame = frame.iloc[selected].reset_index(drop=True)
+        diagnostics.update(
+            {
+                "neighbor_diagnostic_points": int(max_points),
+                "neighbor_diagnostic_total_points": total_points,
+                "neighbor_diagnostic_sampling": "random_without_replacement",
+            }
+        )
     normalized = matrix / np.clip(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-8, None)
     similarity = normalized @ normalized.T
     np.fill_diagonal(similarity, -np.inf)
@@ -258,10 +282,13 @@ def _neighbor_diagnostics(matrix: np.ndarray, frame: pd.DataFrame) -> dict[str, 
     top5 = order[:, : min(5, order.shape[1])]
     cross_top1 = tissues[top1] != tissues
     cross_top5 = np.asarray([(tissues[neighbors] != tissues[idx]).any() for idx, neighbors in enumerate(top5)], dtype=bool)
-    return {
+    diagnostics.update(
+        {
         "cross_tissue_top1_rate": float(cross_top1.mean()),
         "cross_tissue_top5_rate": float(cross_top5.mean()),
-    }
+        }
+    )
+    return diagnostics
 
 
 def _summary_payload(
