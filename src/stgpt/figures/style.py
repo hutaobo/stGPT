@@ -38,9 +38,9 @@ STGPT_RCPARAMS: dict[str, Any] = {
     "font.family": "sans-serif",
     "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
     "axes.linewidth": 0.5,
-    "axes.labelsize": 8,
-    "axes.titlesize": 8,
-    "axes.titleweight": "bold",
+    "axes.labelsize": 7,
+    "axes.titlesize": 7,
+    "axes.titleweight": "normal",
     "axes.labelweight": "normal",
     "axes.spines.top": False,
     "axes.spines.right": False,
@@ -50,22 +50,27 @@ STGPT_RCPARAMS: dict[str, Any] = {
     "axes.prop_cycle": None,  # set below from OKABE_ITO
     "xtick.major.size": 2.5,
     "xtick.major.width": 0.5,
-    "xtick.labelsize": 6,
+    "xtick.labelsize": 7,
     "xtick.direction": "out",
     "ytick.major.size": 2.5,
     "ytick.major.width": 0.5,
-    "ytick.labelsize": 6,
+    "ytick.labelsize": 7,
     "ytick.direction": "out",
     "lines.linewidth": 1.2,
     "lines.markersize": 3,
     "lines.markeredgewidth": 0.4,
-    "legend.fontsize": 6,
+    "legend.fontsize": 7,
     "legend.frameon": False,
     "savefig.dpi": 600,
     "savefig.bbox": "tight",
-    "savefig.pad_inches": 0.05,
+    "savefig.pad_inches": 0.02,
     "savefig.facecolor": "white",
     "image.cmap": "viridis",
+    # Type 42 (TrueType) keeps text as editable text in Adobe Illustrator.
+    # The matplotlib default (Type 3) rasterizes glyphs into path outlines,
+    # which AI cannot edit as text. Always use 42 for both PDF and EPS.
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
 }
 
 
@@ -77,10 +82,11 @@ def apply_style() -> None:
     """
     import matplotlib as mpl
     import matplotlib.pyplot as plt
+    from cycler import cycler
 
     plt.style.use("default")
     params = {key: value for key, value in STGPT_RCPARAMS.items() if value is not None}
-    params["axes.prop_cycle"] = mpl.cycler(color=list(OKABE_ITO))
+    params["axes.prop_cycle"] = cycler(color=list(OKABE_ITO))
     mpl.rcParams.update(params)
 
 

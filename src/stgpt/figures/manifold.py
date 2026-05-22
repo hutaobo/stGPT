@@ -27,10 +27,9 @@ import matplotlib.pyplot as plt  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from . import _io  # noqa: E402
+from ._layout import compact_legend, place_panel_label  # noqa: E402
 from .export import save_figure  # noqa: E402
 from .style import DOUBLE_COLUMN_IN, OKABE_ITO, apply_style, categorical_color_map  # noqa: E402
-
-_MAX_LEGEND_ENTRIES = 12
 
 
 def plot_cross_platform_manifold(
@@ -87,14 +86,17 @@ def plot_cross_platform_manifold(
 
     apply_style()
     n_panels = 3 if has_panel_c else 2
-    width = DOUBLE_COLUMN_IN
-    height = width / (3.1 if has_panel_c else 2.05)
-    fig, axes = plt.subplots(1, n_panels, figsize=(width, height))
+    width = DOUBLE_COLUMN_IN * 0.78
+    height = width / (2.8 if has_panel_c else 2.2)
+    fig, axes = plt.subplots(
+        1, n_panels, figsize=(width, height),
+        constrained_layout={"w_pad": 0.01, "h_pad": 0.01, "wspace": 0.02},
+    )
     axes = list(axes)
 
-    _scatter_panel(axes[0], frame, resolved_batch_key, "A", f"colour: {resolved_batch_key or 'n/a'}", point_size)
+    _scatter_panel(axes[0], frame, resolved_batch_key, "A", point_size)
     structure_col = structure_key if structure_key in frame.columns else None
-    _scatter_panel(axes[1], frame, structure_col, "B", f"colour: {structure_key}", point_size)
+    _scatter_panel(axes[1], frame, structure_col, "B", point_size)
     if has_panel_c:
         _metric_panel(axes[2], mixing_metrics, qc_metrics, "C")
 
@@ -130,16 +132,21 @@ def plot_cross_platform_manifold(
     }
 
 
+def _pretty_label(key: str) -> str:
+    """Turn a snake_case column name into a readable legend title."""
+    return key.replace("_", " ").title()
+
+
 def _scatter_panel(
     ax: plt.Axes,
     frame: pd.DataFrame,
     color_key: str | None,
     tag: str,
-    subtitle: str,
     point_size: float,
 ) -> None:
     x = frame["manifold_x"].to_numpy()
     y = frame["manifold_y"].to_numpy()
+    legend_title = _pretty_label(color_key) if color_key else None
     if color_key and color_key in frame.columns:
         categories = frame[color_key].fillna("unknown").astype(str)
         color_map = categorical_color_map(categories.tolist())
@@ -148,37 +155,16 @@ def _scatter_panel(
             ax.figure.stale = True
         colors = categories.map(color_map)
         ax.scatter(x, y, s=point_size, c=list(colors), linewidths=0.0, alpha=0.7, rasterized=True)
-        _compact_legend(ax, color_map)
+        compact_legend(ax, color_map, title=legend_title)
     else:
         ax.scatter(x, y, s=point_size, c="#4b5563", linewidths=0.0, alpha=0.7, rasterized=True)
 
-    ax.set_title(f"{tag}  {subtitle}", loc="left")
+    ax.set_box_aspect(1)  # force square axes box
     ax.set_xlabel("UMAP 1")
     ax.set_ylabel("UMAP 2")
     ax.set_xticks([])
     ax.set_yticks([])
-
-
-def _compact_legend(ax: plt.Axes, color_map: dict[Any, str]) -> None:
-    items = list(color_map.items())
-    truncated = len(items) > _MAX_LEGEND_ENTRIES
-    shown = items[:_MAX_LEGEND_ENTRIES]
-    handles = [
-        plt.Line2D([], [], marker="o", linestyle="none", markersize=3, markerfacecolor=color, markeredgewidth=0.0)
-        for _, color in shown
-    ]
-    labels = [str(label) for label, _ in shown]
-    if truncated:
-        labels[-1] = f"{labels[-1]} (+{len(items) - _MAX_LEGEND_ENTRIES} more)"
-    ax.legend(
-        handles,
-        labels,
-        loc="upper left",
-        bbox_to_anchor=(1.0, 1.0),
-        borderaxespad=0.0,
-        handletextpad=0.3,
-        labelspacing=0.25,
-    )
+    place_panel_label(ax, tag)
 
 
 def _metric_panel(
@@ -202,7 +188,7 @@ def _metric_panel(
         colors.append(OKABE_ITO[2])  # bluish green
 
     if not values:
-        ax.text(0.5, 0.5, "no metric CSV", ha="center", va="center", fontsize=6)
+        ax.text(0.5, 0.5, "no metric CSV", ha="center", va="center", fontsize=7)
         ax.set_axis_off()
         return
 
@@ -212,10 +198,10 @@ def _metric_panel(
     ax.set_xticks(list(positions))
     ax.set_xticklabels(labels)
     ax.set_ylabel("metric value")
-    ax.set_title(f"{tag}  quantitative support", loc="left")
+    place_panel_label(ax, tag)
     for pos, value in zip(positions, values, strict=False):
         offset = 0.02 if value >= 0 else -0.04
-        ax.text(pos, value + offset, f"{value:.3g}", ha="center", va="bottom" if value >= 0 else "top", fontsize=6)
+        ax.text(pos, value + offset, f"{value:.3g}", ha="center", va="bottom" if value >= 0 else "top", fontsize=7)
 
 
 def _read_optional_csv(path: str | Path | None) -> pd.DataFrame | None:

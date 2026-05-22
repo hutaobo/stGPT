@@ -19,12 +19,18 @@ Design contract (mirrors ``stgpt.evidence``):
 
 from __future__ import annotations
 
+from .ablation import plot_ablation_comparison
+from .dynamics import plot_learning_dynamics
 from .manifold import plot_cross_platform_manifold
+from .structure_context import plot_structure_context_evidence
 from .style import OKABE_ITO, apply_style, categorical_color_map
 
 __all__ = [
     "OKABE_ITO",
     "apply_style",
     "categorical_color_map",
+    "plot_ablation_comparison",
+    "plot_learning_dynamics",
     "plot_cross_platform_manifold",
+    "plot_structure_context_evidence",
 ]

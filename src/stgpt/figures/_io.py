@@ -31,6 +31,31 @@ BATCH_KEY_CANDIDATES: tuple[str, ...] = (
 )
 
 
+def load_table(table: str | Path | pd.DataFrame) -> pd.DataFrame:
+    """Load a generic evidence table (csv/tsv/parquet) or pass a DataFrame through.
+
+    Unlike :func:`load_manifold_frame`, this imposes no column requirements; it
+    is the shared loader for any artifact-first figure (ablation summaries,
+    metric tables, …). Sets ``frame.attrs["source"]`` for provenance.
+    """
+    if isinstance(table, pd.DataFrame):
+        frame = table.copy()
+        frame.attrs["source"] = "<dataframe>"
+        return frame
+    path = Path(table).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"table artifact not found: {path}")
+    suffix = path.suffix.lower()
+    if suffix == ".parquet":
+        frame = pd.read_parquet(path)
+    elif suffix in {".csv", ".tsv"}:
+        frame = pd.read_csv(path, sep="\t" if suffix == ".tsv" else ",")
+    else:
+        raise ValueError(f"unsupported table format '{path.suffix}'; expected .csv, .tsv or .parquet")
+    frame.attrs["source"] = str(path)
+    return frame
+
+
 def load_manifold_frame(manifold: str | Path | pd.DataFrame) -> pd.DataFrame:
     """Load a projected latent-manifold table as a DataFrame.
 

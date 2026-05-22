@@ -282,6 +282,7 @@ def latent_manifold_command(
 def figure_manifold_command(
     manifold: Annotated[Path, typer.Option("--manifold", "-m", exists=True)],
     output: Annotated[Path, typer.Option("--output", "-o")],
+    name: Annotated[str, typer.Option("--name")] = "f1_cross_platform_manifold",
     batch_key: Annotated[str, typer.Option("--batch-key")] = "auto",
     structure_key: Annotated[str, typer.Option("--structure-key")] = "structure_label",
     run_id: Annotated[str | None, typer.Option("--run-id")] = None,
@@ -301,6 +302,7 @@ def figure_manifold_command(
     result = plot_cross_platform_manifold(
         manifold,
         output,
+        name=name,
         batch_key=batch_key,
         structure_key=structure_key,
         run_id=run_id,
@@ -309,6 +311,97 @@ def figure_manifold_command(
         formats=tuple(part.strip() for part in fmt.split(",") if part.strip()),
         max_points=max_points,
         seed=seed,
+    )
+    typer.echo(json.dumps(result, indent=2))
+
+
+@app.command("figure-ablation")
+def figure_ablation_command(
+    summary: Annotated[Path, typer.Option("--summary", "-s", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    name: Annotated[str, typer.Option("--name")] = "f2_ablation_comparison",
+    condition_key: Annotated[str, typer.Option("--condition-key")] = "condition",
+    group_key: Annotated[str, typer.Option("--group-key")] = "tissue",
+    run_ids: Annotated[str | None, typer.Option("--run-ids", help="comma-separated run IDs to keep")] = None,
+    fmt: Annotated[str, typer.Option("--formats", help="comma-separated, e.g. pdf,png")] = "pdf,png",
+) -> None:
+    """Render the F2 ablation comparison figure (requires the figures extra)."""
+    try:
+        from .figures import plot_ablation_comparison
+    except ImportError as exc:  # pragma: no cover - exercised only without the extra
+        raise typer.BadParameter(
+            "figure-ablation needs the optional figures extra: pip install -e \".[figures]\""
+        ) from exc
+    result = plot_ablation_comparison(
+        summary,
+        output,
+        name=name,
+        condition_key=condition_key,
+        group_key=group_key,
+        run_ids=tuple(part.strip() for part in run_ids.split(",") if part.strip()) if run_ids else None,
+        formats=tuple(part.strip() for part in fmt.split(",") if part.strip()),
+    )
+    typer.echo(json.dumps(result, indent=2))
+
+
+@app.command("figure-dynamics")
+def figure_dynamics_command(
+    learning_dynamics: Annotated[Path, typer.Option("--learning-dynamics", "-l", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    name: Annotated[str, typer.Option("--name")] = "f3_learning_dynamics",
+    run_ids: Annotated[
+        str,
+        typer.Option("--run-ids", help="comma-separated run IDs to keep"),
+    ] = "gene_spatial_contour_unit_20k,full_m6_contour_store_lambda_0_01_20k,structure_context_m6_20k",
+    fmt: Annotated[str, typer.Option("--formats", help="comma-separated, e.g. pdf,png")] = "pdf,png",
+) -> None:
+    """Render the F3 43-case learning-dynamics figure (requires the figures extra)."""
+    try:
+        from .figures import plot_learning_dynamics
+    except ImportError as exc:  # pragma: no cover - exercised only without the extra
+        raise typer.BadParameter(
+            "figure-dynamics needs the optional figures extra: pip install -e \".[figures]\""
+        ) from exc
+    result = plot_learning_dynamics(
+        learning_dynamics,
+        output,
+        name=name,
+        run_ids=tuple(part.strip() for part in run_ids.split(",") if part.strip()),
+        formats=tuple(part.strip() for part in fmt.split(",") if part.strip()),
+    )
+    typer.echo(json.dumps(result, indent=2))
+
+
+@app.command("figure-structure-context")
+def figure_structure_context_command(
+    evidence_summary: Annotated[Path, typer.Option("--evidence-summary", "-s", exists=True)],
+    run_dir: Annotated[Path, typer.Option("--run-dir", "-r", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    pointer_audit: Annotated[Path | None, typer.Option("--pointer-audit", exists=True)] = None,
+    name: Annotated[str, typer.Option("--name")] = "f4_auditable_structure_context_evidence",
+    run_ids: Annotated[
+        str,
+        typer.Option("--run-ids", help="comma-separated run IDs to keep"),
+    ] = "gene_spatial_contour_unit_20k,full_m6_contour_store_lambda_0_01_20k,structure_context_m6_20k",
+    structure_run_id: Annotated[str, typer.Option("--structure-run-id")] = "structure_context_m6_20k",
+    fmt: Annotated[str, typer.Option("--formats", help="comma-separated, e.g. pdf,png")] = "pdf,png",
+) -> None:
+    """Render the F4 auditable structure-context evidence figure (requires the figures extra)."""
+    try:
+        from .figures import plot_structure_context_evidence
+    except ImportError as exc:  # pragma: no cover - exercised only without the extra
+        raise typer.BadParameter(
+            "figure-structure-context needs the optional figures extra: pip install -e \".[figures]\""
+        ) from exc
+    result = plot_structure_context_evidence(
+        evidence_summary,
+        run_dir,
+        output,
+        pointer_audit=pointer_audit,
+        name=name,
+        run_ids=tuple(part.strip() for part in run_ids.split(",") if part.strip()),
+        structure_run_id=structure_run_id,
+        formats=tuple(part.strip() for part in fmt.split(",") if part.strip()),
     )
     typer.echo(json.dumps(result, indent=2))
 
