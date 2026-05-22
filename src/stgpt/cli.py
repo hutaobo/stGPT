@@ -277,6 +277,41 @@ def latent_manifold_command(
     typer.echo(json.dumps(result, indent=2))
 
 
+@app.command("figure-manifold")
+def figure_manifold_command(
+    manifold: Annotated[Path, typer.Option("--manifold", "-m", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    batch_key: Annotated[str, typer.Option("--batch-key")] = "auto",
+    structure_key: Annotated[str, typer.Option("--structure-key")] = "structure_label",
+    run_id: Annotated[str | None, typer.Option("--run-id")] = None,
+    batch_mixing_csv: Annotated[Path | None, typer.Option("--batch-mixing-csv")] = None,
+    embedding_qc_csv: Annotated[Path | None, typer.Option("--embedding-qc-csv")] = None,
+    fmt: Annotated[str, typer.Option("--formats", help="comma-separated, e.g. pdf,png")] = "pdf,png",
+    max_points: Annotated[int, typer.Option("--max-points", min=0)] = 50000,
+    seed: Annotated[int, typer.Option("--seed")] = 0,
+) -> None:
+    """Render the F1 cross-platform manifold figure (requires the figures extra)."""
+    try:
+        from .figures import plot_cross_platform_manifold
+    except ImportError as exc:  # pragma: no cover - exercised only without the extra
+        raise typer.BadParameter(
+            "figure-manifold needs the optional figures extra: pip install -e \".[figures]\""
+        ) from exc
+    result = plot_cross_platform_manifold(
+        manifold,
+        output,
+        batch_key=batch_key,
+        structure_key=structure_key,
+        run_id=run_id,
+        batch_mixing_csv=batch_mixing_csv,
+        embedding_qc_csv=embedding_qc_csv,
+        formats=tuple(part.strip() for part in fmt.split(",") if part.strip()),
+        max_points=max_points,
+        seed=seed,
+    )
+    typer.echo(json.dumps(result, indent=2))
+
+
 @app.command("check-contract")
 def check_contract_command(
     checkpoint: Annotated[Path, typer.Option("--checkpoint", "-k", exists=True)],

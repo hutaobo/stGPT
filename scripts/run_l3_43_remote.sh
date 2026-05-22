@@ -315,6 +315,88 @@ start_background_pipeline() {
   echo "${label}: pid=$(cat "${LOG_ROOT}/jobs/${label}.pid") gpu=${gpu} log=${LOG_ROOT}/jobs/${label}.log"
 }
 
+sweep_runs_from_suite() {
+  python - <<'PY' "${REPO_DIR}/configs/evidence/l3_43.yaml"
+import os
+import sys
+
+import yaml
+
+suite = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+for run in suite.get("runs", []):
+    config = run.get("config_path")
+    run_dir = os.path.expandvars(str(run.get("run_dir", "")))
+    role = run.get("checkpoint_role", "best_loss")
+    if config and run_dir and "$" not in run_dir:
+        print(f"{config}|{run_dir}|{role}")
+PY
+}
+
+# Distribute a list of runs across a GPU pool (default 2-7, leaving 0-1 free), one
+# background pipeline per GPU, refilling a GPU when its run finishes. Runs come from
+# explicit config paths ("$@") or, when none are given, from the l3_43 evidence suite.
+# RAM is the binding constraint for concurrency, not the GPU: training reuses the
+# train-split (validate-data's ~371GB RSS is skipped unless STGPT_L3_RUN_QC=1). Start
+# conservative and raise STGPT_L3_MAX_CONCURRENT while watching RSS.
+start_sweep() {
+  mkdir -p "${LOG_ROOT}/jobs"
+  local gpus
+  read -r -a gpus <<< "${STGPT_L3_GPUS:-2 3 4 5 6 7}"
+  local max_concurrent="${STGPT_L3_MAX_CONCURRENT:-${#gpus[@]}}"
+  local runs=()
+  if [[ "$#" -gt 0 ]]; then
+    local config stem
+    for config in "$@"; do
+      stem="$(basename "${config}")"; stem="${stem%.yaml}"
+      runs+=("${config}|${OUTPUT_ROOT}/pilot_runs/${L3_VERSION}/${stem}|${STGPT_L3_ROLE:-best_alignment}")
+    done
+  else
+    local line
+    while IFS= read -r line; do
+      [[ -n "${line}" ]] && runs+=("${line}")
+    done < <(sweep_runs_from_suite)
+  fi
+  local total="${#runs[@]}"
+  if (( total == 0 )); then
+    echo "start-sweep: no runs to launch" >&2
+    return 1
+  fi
+  log_stage "start-sweep gpus=[${gpus[*]}] max_concurrent=${max_concurrent} runs=${total}"
+  declare -A gpu_pid=()
+  local idx=0
+  while (( idx < total )) || (( ${#gpu_pid[@]} > 0 )); do
+    if (( ${#gpu_pid[@]} > 0 )); then
+      local g
+      for g in "${!gpu_pid[@]}"; do
+        if ! kill -0 "${gpu_pid[$g]}" 2>/dev/null; then
+          unset 'gpu_pid['"$g"']'
+        fi
+      done
+    fi
+    local g
+    for g in "${gpus[@]}"; do
+      (( idx < total )) || break
+      (( ${#gpu_pid[@]} < max_concurrent )) || break
+      if [[ -z "${gpu_pid[$g]:-}" ]]; then
+        local entry config run_dir role label pid
+        entry="${runs[$idx]}"
+        config="${entry%%|*}"; entry="${entry#*|}"
+        run_dir="${entry%%|*}"; role="${entry##*|}"
+        label="$(basename "${run_dir}")_gpu${g}"
+        if start_background_pipeline "${label}" "${config}" "${run_dir}" "${role}" "${g}"; then
+          pid="$(cat "${LOG_ROOT}/jobs/${label}.pid" 2>/dev/null || true)"
+          if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+            gpu_pid[$g]="${pid}"
+          fi
+        fi
+        idx=$((idx + 1))
+      fi
+    done
+    sleep 15
+  done
+  log_stage "start-sweep complete runs=${total}"
+}
+
 case "${ACTION}" in
   freeze)
     freeze_data_version
@@ -358,6 +440,10 @@ case "${ACTION}" in
       "best_loss" \
       "${STGPT_L3_BASELINE_GPU:-4}"
     ;;
+  start-sweep)
+    shift || true
+    start_sweep "$@"
+    ;;
   pipeline)
     run_pipeline "$2" "$3" "$4" "$5"
     ;;
@@ -365,7 +451,7 @@ case "${ACTION}" in
     run_stgpt evidence-summary --suite "${REPO_DIR}/configs/evidence/l3_43.yaml" --output "${OUTPUT_ROOT}/evidence/l3_20260507_43case"
     ;;
   *)
-    echo "Usage: $0 {freeze|rewrite-paths|pack|audit-pack|smoke|start-smoke|start-foundation|pipeline|evidence}" >&2
+    echo "Usage: $0 {freeze|rewrite-paths|pack|audit-pack|smoke|start-smoke|start-foundation|start-sweep|pipeline|evidence}" >&2
     exit 2
     ;;
 esac

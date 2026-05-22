@@ -157,6 +157,7 @@ class TrainingConfig(BaseModel):
     warmup_steps: int = Field(default=0, ge=0)
     lr_schedule: Literal["none", "cosine", "onecycle"] = "none"
     save_every_n_steps: int | None = Field(default=None, ge=1)
+    log_every_n_steps: int = Field(default=1, ge=1)
     alignment_telemetry_every_n_steps: int | None = Field(default=None, ge=1)
     mask_probability: float = Field(default=0.15, gt=0.0, lt=1.0)
     neighborhood_k: int = Field(default=8, ge=1)

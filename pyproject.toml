@@ -42,12 +42,15 @@ dependencies = [
 xenium = ["pyXenium>=0.4.1"]
 spatho = ["spatho>=0.1.0"]
 image = ["timm>=1.0", "transformers>=4.40", "huggingface_hub>=0.24", "safetensors>=0.4"]
+figures = ["matplotlib>=3.7", "seaborn>=0.12"]
 dev = [
     "pytest>=8,<9",
     "ruff>=0.8",
     "mypy>=1.10",
     "build>=1,<2",
     "twine>=5,<7",
+    "matplotlib>=3.7",
+    "seaborn>=0.12",
 ]
 
 [project.urls]

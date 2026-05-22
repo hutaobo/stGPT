@@ -46,7 +46,7 @@ def evaluate(
     model = _load_model(checkpoint_payload, eval_cfg, dataset).to(target)
     model.eval()
 
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=dataset.collate, num_workers=0)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=dataset.collate, num_workers=4)
     buffers = _new_prediction_buffers(split_frame["split"].unique().tolist())
     embeddings: list[np.ndarray] = []
     image_embeddings: list[np.ndarray] = []

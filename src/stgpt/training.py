@@ -50,13 +50,20 @@ def train(
     val_indices = np.flatnonzero(split_values == "val").astype(int).tolist()
     if not train_indices:
         train_indices = list(range(len(dataset)))
+    pin_memory = device.type == "cuda"
+    train_loader_kwargs: dict[str, Any] = {}
+    if cfg.training.num_workers > 0:
+        train_loader_kwargs["persistent_workers"] = True
+        train_loader_kwargs["prefetch_factor"] = 4
     loader = DataLoader(
         Subset(dataset, train_indices),
         batch_size=cfg.training.batch_size,
         shuffle=True,
         collate_fn=dataset.collate,
         num_workers=cfg.training.num_workers,
+        pin_memory=pin_memory,
         drop_last=False,
+        **train_loader_kwargs,
     )
     val_loader = (
         DataLoader(
@@ -64,7 +71,8 @@ def train(
             batch_size=cfg.training.batch_size,
             shuffle=False,
             collate_fn=dataset.collate,
-            num_workers=0,
+            num_workers=min(int(cfg.training.num_workers), 4),
+            pin_memory=pin_memory,
             drop_last=False,
         )
         if val_indices
@@ -138,65 +146,75 @@ def train(
             if scheduler is not None:
                 scheduler.step()
             step += 1
-            metric_row = {key: float(value.detach().cpu()) for key, value in losses.items()}
-            metric_row["step"] = float(step)
-            metric_row["lr"] = float(optimizer.param_groups[0]["lr"])
-            metric_row.update({key: float(value) for key, value in weights.items()})
+            is_save_step = bool(cfg.training.save_every_n_steps) and step % int(cfg.training.save_every_n_steps) == 0
+            # Only materialize metrics (a GPU->CPU sync) on logging/validation/save/final
+            # steps. For a tiny model this per-step sync otherwise serializes the pipeline.
+            log_now = (
+                step % int(cfg.training.log_every_n_steps) == 0
+                or step >= cfg.training.max_steps
+                or _should_validate(step, cfg)
+                or is_save_step
+            )
+            if log_now:
+                metric_row = {key: float(value.detach().cpu()) for key, value in losses.items()}
+                metric_row["step"] = float(step)
+                metric_row["lr"] = float(optimizer.param_groups[0]["lr"])
+                metric_row.update({key: float(value) for key, value in weights.items()})
 
-            if _should_validate(step, cfg):
-                val_metrics = _evaluate_validation(model, val_loader, device, cfg, step)
-                if val_metrics:
-                    metric_row.update(val_metrics)
-                    if val_metrics["val_loss"] < best_metric:
-                        best_metric = val_metrics["val_loss"]
-                        _save_checkpoint(
-                            best_checkpoint_path,
-                            model=model,
-                            optimizer=optimizer,
-                            scheduler=scheduler,
-                            cfg=cfg,
-                            dataset=dataset,
-                            metrics=metrics + [metric_row],
-                            step=step,
-                            best_metric=best_metric,
-                            best_alignment_metric=best_alignment_metric,
-                            split_summary=_split_summary(splits),
-                        )
-                    val_alignment = val_metrics.get("val_image_gene_loss")
-                    if val_alignment is not None and val_alignment < best_alignment_metric:
-                        best_alignment_metric = val_alignment
-                        _save_checkpoint(
-                            best_alignment_checkpoint_path,
-                            model=model,
-                            optimizer=optimizer,
-                            scheduler=scheduler,
-                            cfg=cfg,
-                            dataset=dataset,
-                            metrics=metrics + [metric_row],
-                            step=step,
-                            best_metric=best_metric,
-                            best_alignment_metric=best_alignment_metric,
-                            split_summary=_split_summary(splits),
-                        )
+                if _should_validate(step, cfg):
+                    val_metrics = _evaluate_validation(model, val_loader, device, cfg, step)
+                    if val_metrics:
+                        metric_row.update(val_metrics)
+                        if val_metrics["val_loss"] < best_metric:
+                            best_metric = val_metrics["val_loss"]
+                            _save_checkpoint(
+                                best_checkpoint_path,
+                                model=model,
+                                optimizer=optimizer,
+                                scheduler=scheduler,
+                                cfg=cfg,
+                                dataset=dataset,
+                                metrics=metrics + [metric_row],
+                                step=step,
+                                best_metric=best_metric,
+                                best_alignment_metric=best_alignment_metric,
+                                split_summary=_split_summary(splits),
+                            )
+                        val_alignment = val_metrics.get("val_image_gene_loss")
+                        if val_alignment is not None and val_alignment < best_alignment_metric:
+                            best_alignment_metric = val_alignment
+                            _save_checkpoint(
+                                best_alignment_checkpoint_path,
+                                model=model,
+                                optimizer=optimizer,
+                                scheduler=scheduler,
+                                cfg=cfg,
+                                dataset=dataset,
+                                metrics=metrics + [metric_row],
+                                step=step,
+                                best_metric=best_metric,
+                                best_alignment_metric=best_alignment_metric,
+                                split_summary=_split_summary(splits),
+                            )
 
-            metrics.append(metric_row)
-            if cfg.training.save_every_n_steps and step % int(cfg.training.save_every_n_steps) == 0:
-                _save_checkpoint(
-                    checkpoint_dir / f"step_{step:06d}.pt",
-                    model=model,
-                    optimizer=optimizer,
-                    scheduler=scheduler,
-                    cfg=cfg,
-                    dataset=dataset,
-                    metrics=metrics,
-                    step=step,
-                    best_metric=best_metric,
-                    best_alignment_metric=best_alignment_metric,
-                    split_summary=_split_summary(splits),
-                )
-                _write_metrics(output_dir, metrics)
-            elif "val_loss" in metric_row:
-                _write_metrics(output_dir, metrics)
+                metrics.append(metric_row)
+                if is_save_step:
+                    _save_checkpoint(
+                        checkpoint_dir / f"step_{step:06d}.pt",
+                        model=model,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
+                        cfg=cfg,
+                        dataset=dataset,
+                        metrics=metrics,
+                        step=step,
+                        best_metric=best_metric,
+                        best_alignment_metric=best_alignment_metric,
+                        split_summary=_split_summary(splits),
+                    )
+                    _write_metrics(output_dir, metrics)
+                elif "val_loss" in metric_row:
+                    _write_metrics(output_dir, metrics)
 
     checkpoint_path = checkpoint_dir / "last.pt"
     if not best_checkpoint_path.exists():
@@ -369,7 +387,7 @@ def _enforce_image_qc_gate(dataset: RegionDataset, config: StGPTConfig) -> None:
 
 
 def _move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
-    return {key: value.to(device) if isinstance(value, torch.Tensor) else value for key, value in batch.items()}
+    return {key: value.to(device, non_blocking=True) if isinstance(value, torch.Tensor) else value for key, value in batch.items()}
 
 
 def _materialize_model(model: ImageGeneSTGPT, dataset: RegionDataset, cfg: StGPTConfig, device: torch.device) -> None:

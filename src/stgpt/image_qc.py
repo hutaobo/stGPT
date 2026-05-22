@@ -87,7 +87,7 @@ def precompute_image_embeddings(
     ).to(target)
     encoder.eval()
 
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=dataset.collate, num_workers=0)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=dataset.collate, num_workers=4)
     embeddings: list[np.ndarray] = []
     region_ids: list[str] = []
     image_sources: list[int] = []

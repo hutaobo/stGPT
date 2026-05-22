@@ -178,7 +178,7 @@ def _string_index(frame: pd.DataFrame, column: str) -> dict[str, int]:
 
 
 def _embed_dataset(model, dataset: RegionDataset, *, batch_size: int, device: torch.device) -> dict[str, np.ndarray]:
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=dataset.collate, num_workers=0)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=dataset.collate, num_workers=4)
     region_emb: list[np.ndarray] = []
     image_emb: list[np.ndarray] = []
     with torch.no_grad():
@@ -205,7 +205,7 @@ def _embed_targets(
 ) -> list[dict[str, Any]]:
     indices = target_frame["dataset_index"].astype(int).tolist()
     subset = Subset(dataset, indices)
-    loader = DataLoader(subset, batch_size=batch_size, shuffle=False, collate_fn=dataset.collate, num_workers=0)
+    loader = DataLoader(subset, batch_size=batch_size, shuffle=False, collate_fn=dataset.collate, num_workers=4)
     rows: list[dict[str, Any]] = []
     offset = 0
     with torch.no_grad():

@@ -109,7 +109,7 @@ def _embed_dataset_outputs(
     batch_size: int,
     device: str,
 ) -> tuple[np.ndarray, pd.DataFrame]:
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=dataset.collate, num_workers=0)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=dataset.collate, num_workers=4)
     target = _resolve_device(device)
     checkpoint_cfg = StGPTConfig.model_validate(checkpoint_payload.get("config", cfg.model_dump()))
     model = ImageGeneSTGPT(
