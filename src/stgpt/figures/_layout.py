@@ -53,18 +53,25 @@ def compact_legend(
     *,
     title: str | None = None,
     bbox_to_anchor: tuple[float, float] = (1.01, 1.0),
+    max_entries: int | None = 12,
 ) -> Legend:
     """Draw a single-column, left-aligned legend hugging the axes.
 
-    Never truncates entries; the title aligns with the entry text, not the
-    marker. Returns the legend so callers can reposition it if needed.
+    Very large biological label sets are truncated to keep panel geometry
+    stable. The title aligns with the entry text, not the marker. Returns the
+    legend so callers can reposition it if needed.
     """
     items = list(color_map.items())
+    truncated = max_entries is not None and len(items) > max_entries
+    if truncated and max_entries is not None:
+        items = items[:max_entries]
     handles = [
         plt.Line2D([], [], marker="o", linestyle="none", markersize=3, markerfacecolor=color, markeredgewidth=0.0)
         for _, color in items
     ]
     labels = [str(label) for label, _ in items]
+    if truncated and max_entries is not None and labels:
+        labels[-1] = f"{labels[-1]} (+{len(color_map) - max_entries} more)"
     legend = ax.legend(
         handles,
         labels,

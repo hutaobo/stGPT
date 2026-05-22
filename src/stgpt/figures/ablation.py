@@ -50,6 +50,9 @@ DEFAULT_CONDITION_LABELS: dict[str, str] = {
     "Zero-shot Breast→Cervical Full M6": "Zero-shot",
     "Gene-only baseline": "Gene-only",
     "Full M6 PNG fallback": "M6 PNG",
+    "L3 Full M6 contour-store lambda=0.01, slide-holdout, 20k steps": "Full M6",
+    "L3 Gene+Spatial contour-unit baseline, slide-holdout, 20k steps": "Gene+spatial",
+    "L3 Structure-context M6 contour-store, slide-holdout, 20k steps": "Structure context",
 }
 
 # Logical ablation reading order (floor -> full model -> transfer).
@@ -59,6 +62,7 @@ DEFAULT_CONDITION_ORDER: tuple[str, ...] = (
     "Random init",
     "Gene+spatial",
     "Full M6",
+    "Structure context",
     "Zero-shot",
 )
 
