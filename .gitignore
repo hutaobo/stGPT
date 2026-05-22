@@ -29,6 +29,7 @@ data/
 *.safetensors
 *.parquet
 *.png
+!docs/assets/graphical_abstract_structure_context.png
 *.tif
 *.tiff
 !.github/

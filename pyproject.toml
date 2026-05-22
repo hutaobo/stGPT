@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "stgpt"
 version = "0.1.0"
-description = "Xenium-first image-gene GPT prototype for spatial transcriptomics."
+description = "stGPT links tissue images, gene expression, and structure context for spatial transcriptomics."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
