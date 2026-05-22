@@ -512,11 +512,11 @@ def _svg_points(frame: pd.DataFrame) -> str:
     palette = ["#2563eb", "#dc2626", "#059669", "#7c3aed", "#ea580c", "#0891b2", "#4b5563"]
     color_map = {tissue: palette[idx % len(palette)] for idx, tissue in enumerate(tissues)}
     circles = []
-    for idx, row in frame.iterrows():
-        if not finite[idx]:
+    for pos, (_, row) in enumerate(frame.iterrows()):
+        if not finite[pos]:
             continue
-        sx = pad + ((float(x[idx]) - xmin) / xrange) * (width - 2 * pad)
-        sy = height - pad - ((float(y[idx]) - ymin) / yrange) * (height - 2 * pad)
+        sx = pad + ((float(x[pos]) - xmin) / xrange) * (width - 2 * pad)
+        sy = height - pad - ((float(y[pos]) - ymin) / yrange) * (height - 2 * pad)
         tissue = str(row.get("tissue") or "unknown")
         label = _point_hover_label(row)
         href = _evidence_href(row)
