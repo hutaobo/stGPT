@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import anndata as ad
+import numpy as np
 import pandas as pd
+from scipy import sparse
 from typer.testing import CliRunner
 
 from stgpt.cli import app
-from stgpt.config import DataConfig, ModelConfig, StGPTConfig, TrainingConfig
+from stgpt.config import DataConfig, ModelConfig, SplitConfig, StGPTConfig, TrainingConfig
 from stgpt.data import build_training_case
 from stgpt.pseudo_spatial import build_pseudo_spatial_targets, predict_pseudo_spatial, train_pseudo_spatial_prior
 
@@ -123,3 +126,67 @@ def test_cli_train_pseudo_spatial_smoke(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert "checkpoint" in result.output
+
+
+def test_train_pseudo_spatial_uses_processed_corpus_streaming_path(tmp_path: Path) -> None:
+    roots: list[Path] = []
+    for slide_idx in range(2):
+        root = tmp_path / f"slide_{slide_idx}_outs"
+        cells = root / "xenium_slide.zarr" / "tables" / "cells"
+        cells.parent.mkdir(parents=True)
+        obs = pd.DataFrame(
+            {
+                "cell_id": [f"s{slide_idx}_c{i}" for i in range(8)],
+                "contour_id": [f"r{i % 4}" for i in range(8)],
+                "structure_id": [i % 2 for i in range(8)],
+                "structure_label": [f"structure_{i % 2}" for i in range(8)],
+                "x": np.arange(8, dtype=np.float32) + slide_idx * 100,
+                "y": np.arange(8, dtype=np.float32),
+            },
+            index=[f"s{slide_idx}_c{i}" for i in range(8)],
+        )
+        var = pd.DataFrame({"feature_name": [f"GENE{i}" for i in range(6)]}, index=[f"GENE{i}" for i in range(6)])
+        values = np.arange(48, dtype=np.float32).reshape(8, 6)
+        adata = ad.AnnData(X=sparse.csr_matrix(values), obs=obs, var=var)
+        adata.write_zarr(cells)
+        roots.append(root)
+
+    cfg = StGPTConfig(
+        case_name="processed_corpus_pseudo",
+        data=DataConfig(mode="corpus", dataset_roots=[str(root) for root in roots], output_dir=str(tmp_path / "case")),
+        model=ModelConfig(
+            d_model=32,
+            n_heads=4,
+            n_layers=1,
+            max_genes=4,
+            image_size=32,
+            n_expression_bins=8,
+            use_image_context=False,
+        ),
+        training=TrainingConfig(batch_size=4, max_steps=1, output_dir=str(tmp_path / "train"), device="cpu", seed=3),
+        split=SplitConfig(
+            strategy="slide_holdout",
+            group_key="corpus_slide_id",
+            train_fraction=0.5,
+            val_fraction=0.25,
+            test_fraction=0.25,
+            seed=3,
+        ),
+    )
+
+    result = train_pseudo_spatial_prior(
+        cfg,
+        output_dir=tmp_path / "processed_train",
+        max_steps=1,
+        n_spatial_bins=4,
+        n_niches=2,
+        max_genes=4,
+        d_model=32,
+        batch_size=4,
+        device="cpu",
+    )
+
+    reference = pd.read_parquet(result["reference_regions"])
+    assert result["n_regions"] == 8
+    assert result["n_genes"] == 4
+    assert set(reference["corpus_slide_id"].astype(str)) == {"slide_0_outs", "slide_1_outs"}

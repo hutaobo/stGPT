@@ -17,7 +17,20 @@ from torch import Tensor, nn
 from torch.utils.data import DataLoader, Dataset, Subset
 
 from .config import StGPTConfig
-from .data import TrainingCase, build_training_case, ensure_region_training_case
+from .data import (
+    TrainingCase,
+    _apply_case_metadata,
+    _build_region_training_case,
+    _configured_dataset_roots,
+    _merge_sibling_cell_to_contour,
+    _merge_structure_assignments,
+    _normalize_adata_contract,
+    _prefix_training_case_ids,
+    _resolve_processed_xenium_slide_root,
+    _slide_corpus_item_config,
+    build_training_case,
+    ensure_region_training_case,
+)
 from .qc import make_splits
 from .tokenization import GeneVocab
 
@@ -102,6 +115,22 @@ class _PseudoSpatialDataset(Dataset[dict[str, Tensor]]):
         return item
 
 
+class _PseudoSpatialBlock(NamedTuple):
+    region_table: pd.DataFrame
+    expression: sparse.csr_matrix
+    gene_names: list[str]
+
+
+class _PseudoSpatialTrainingData(NamedTuple):
+    features_raw: np.ndarray
+    target_frame: pd.DataFrame
+    target_meta: dict[str, Any]
+    splits: pd.DataFrame
+    selected_gene_indices: np.ndarray
+    selected_genes: list[str]
+    n_regions: int
+
+
 def train_pseudo_spatial_prior(
     config: StGPTConfig | str | Path,
     *,
@@ -130,27 +159,25 @@ def train_pseudo_spatial_prior(
     out = Path(output_dir).expanduser()
     out.mkdir(parents=True, exist_ok=True)
 
-    case = ensure_region_training_case(build_training_case(cfg), cfg)
-    if case.region_table.empty or case.region_expression.shape[0] == 0:
-        raise ValueError("No trainable region expression rows were found for pseudo-spatial prior training.")
-
-    vocab = GeneVocab.from_adata(case.adata, gene_name_key=cfg.data.gene_name_key)
-    selected_indices = _select_gene_indices(case.region_expression, max_genes=max_genes)
-    selected_genes = [vocab.genes[int(idx)] for idx in selected_indices]
-    features_raw = _feature_matrix(case.region_expression, selected_indices)
+    training_data = _build_pseudo_spatial_training_data(
+        cfg,
+        max_genes=max_genes,
+        n_spatial_bins=n_spatial_bins,
+        n_niches=n_niches,
+        seed=seed_value,
+    )
+    features_raw = training_data.features_raw
     feature_mean = features_raw.mean(axis=0, keepdims=True).astype(np.float32)
     feature_std = features_raw.std(axis=0, keepdims=True).astype(np.float32)
     feature_std[feature_std < 1e-6] = 1.0
     features = ((features_raw - feature_mean) / feature_std).astype(np.float32)
 
-    target_frame, target_meta = build_pseudo_spatial_targets(
-        case,
-        n_spatial_bins=n_spatial_bins,
-        n_niches=n_niches,
-        seed=seed_value,
-    )
-    splits = make_splits(case, cfg)
-    split_values = splits["split"].astype(str).to_numpy() if "split" in splits.columns else np.asarray(["train"] * len(case.region_table))
+    target_frame = training_data.target_frame
+    target_meta = training_data.target_meta
+    splits = training_data.splits
+    selected_indices = training_data.selected_gene_indices
+    selected_genes = training_data.selected_genes
+    split_values = splits["split"].astype(str).to_numpy() if "split" in splits.columns else np.asarray(["train"] * len(target_frame))
     train_indices = np.flatnonzero(split_values == "train").astype(int).tolist()
     val_indices = np.flatnonzero(split_values == "val").astype(int).tolist()
     if not train_indices:
@@ -383,6 +410,183 @@ def predict_pseudo_spatial(
         "missing_selected_gene_count": int(len(missing_genes)),
         "projection": projection_summary,
     }
+
+
+def _build_pseudo_spatial_training_data(
+    cfg: StGPTConfig,
+    *,
+    max_genes: int,
+    n_spatial_bins: int,
+    n_niches: int,
+    seed: int,
+) -> _PseudoSpatialTrainingData:
+    blocks = _processed_corpus_blocks(cfg)
+    if blocks:
+        return _training_data_from_blocks(
+            cfg,
+            blocks,
+            max_genes=max_genes,
+            n_spatial_bins=n_spatial_bins,
+            n_niches=n_niches,
+            seed=seed,
+        )
+    case = ensure_region_training_case(build_training_case(cfg), cfg)
+    if case.region_table.empty or case.region_expression.shape[0] == 0:
+        raise ValueError("No trainable region expression rows were found for pseudo-spatial prior training.")
+    vocab = GeneVocab.from_adata(case.adata, gene_name_key=cfg.data.gene_name_key)
+    selected_indices = _select_gene_indices(case.region_expression, max_genes=max_genes)
+    selected_genes = [vocab.genes[int(idx)] for idx in selected_indices]
+    target_frame, target_meta = build_pseudo_spatial_targets(
+        case,
+        n_spatial_bins=n_spatial_bins,
+        n_niches=n_niches,
+        seed=seed,
+    )
+    return _PseudoSpatialTrainingData(
+        features_raw=_feature_matrix(case.region_expression, selected_indices),
+        target_frame=target_frame,
+        target_meta=target_meta,
+        splits=make_splits(case, cfg),
+        selected_gene_indices=selected_indices,
+        selected_genes=selected_genes,
+        n_regions=int(case.region_expression.shape[0]),
+    )
+
+
+def _processed_corpus_blocks(cfg: StGPTConfig) -> list[_PseudoSpatialBlock] | None:
+    if cfg.data.mode != "corpus":
+        return None
+    roots = _configured_dataset_roots(cfg.data)
+    if not roots:
+        return None
+    resolved_roots: list[tuple[Path, Path]] = []
+    for root in roots:
+        resolved = _resolve_processed_xenium_slide_root(root)
+        if resolved is None:
+            return None
+        resolved_roots.append(resolved)
+    blocks: list[_PseudoSpatialBlock] = []
+    for idx, (case_root, slide_store) in enumerate(resolved_roots):
+        slide_id = case_root.name or f"slide_{idx}"
+        slide_cfg = _slide_corpus_item_config(cfg, case_root=case_root, slide_store=slide_store, slide_id=slide_id, index=idx)
+        data = slide_cfg.data.model_copy(
+            update={
+                "patch_manifest": None,
+                "contour_manifest": None,
+                "contour_image_store": None,
+            }
+        )
+        slide_cfg = slide_cfg.model_copy(update={"data": data}, deep=True)
+        adata = _read_xenium_slide_cells(slide_store, slide_cfg, source_name=slide_id, source_index=idx)
+        _merge_sibling_cell_to_contour(adata, slide_cfg.data)
+        case = _build_region_training_case(
+            adata,
+            pd.DataFrame(columns=["contour_id", "structure_id", "structure_label", "image_path"]),
+            slide_cfg,
+            output_dir=slide_cfg.data.output_path,
+        )
+        case = _prefix_training_case_ids(case, slide_cfg.data, source_name=slide_id)
+        if not case.region_table.empty and case.region_expression.shape[0] > 0:
+            blocks.append(
+                _PseudoSpatialBlock(
+                    region_table=case.region_table.copy(),
+                    expression=case.region_expression.tocsr(),
+                    gene_names=_adata_gene_names(case.adata, slide_cfg.data.gene_name_key),
+                )
+            )
+    if not blocks:
+        raise ValueError("Processed XeniumSlide corpus contains no trainable pseudo-spatial regions.")
+    return blocks
+
+
+def _read_xenium_slide_cells(
+    slide_store: Path,
+    slide_cfg: StGPTConfig,
+    *,
+    source_name: str,
+    source_index: int,
+) -> ad.AnnData:
+    cells_table = slide_store / "tables" / "cells"
+    if not cells_table.exists():
+        raise FileNotFoundError(f"XeniumSlide cells table is missing: {cells_table}")
+    adata = ad.read_zarr(cells_table)
+    _normalize_adata_contract(adata, slide_cfg.data)
+    _apply_case_metadata(adata, slide_cfg.data, source_name=source_name, source_index=source_index)
+    _merge_structure_assignments(adata, slide_cfg.data)
+    return adata
+
+
+def _training_data_from_blocks(
+    cfg: StGPTConfig,
+    blocks: list[_PseudoSpatialBlock],
+    *,
+    max_genes: int,
+    n_spatial_bins: int,
+    n_niches: int,
+    seed: int,
+) -> _PseudoSpatialTrainingData:
+    selected_genes = _select_genes_from_blocks(blocks, max_genes=max_genes)
+    features_raw = _features_from_blocks(blocks, selected_genes)
+    region_table = pd.concat([block.region_table for block in blocks], ignore_index=True)
+    case = TrainingCase(
+        adata=ad.AnnData(X=sparse.csr_matrix((0, 0), dtype=np.float32)),
+        patch_table=pd.DataFrame(),
+        output_dir=cfg.data.output_path,
+        region_table=region_table,
+        region_expression=sparse.csr_matrix((len(region_table), 0), dtype=np.float32),
+    )
+    target_frame, target_meta = build_pseudo_spatial_targets(
+        case,
+        n_spatial_bins=n_spatial_bins,
+        n_niches=n_niches,
+        seed=seed,
+    )
+    return _PseudoSpatialTrainingData(
+        features_raw=features_raw,
+        target_frame=target_frame,
+        target_meta=target_meta,
+        splits=make_splits(case, cfg),
+        selected_gene_indices=np.arange(len(selected_genes), dtype=np.int64),
+        selected_genes=selected_genes,
+        n_regions=int(features_raw.shape[0]),
+    )
+
+
+def _select_genes_from_blocks(blocks: list[_PseudoSpatialBlock], *, max_genes: int) -> list[str]:
+    stats: dict[str, list[float]] = {}
+    for block in blocks:
+        matrix = block.expression.tocsr()
+        sums = np.asarray(matrix.sum(axis=0)).ravel().astype(np.float64)
+        squares = np.asarray(matrix.multiply(matrix).sum(axis=0)).ravel().astype(np.float64)
+        n_rows = float(matrix.shape[0])
+        for idx, gene in enumerate(block.gene_names):
+            slot = stats.setdefault(str(gene), [0.0, 0.0, 0.0])
+            slot[0] += float(sums[idx])
+            slot[1] += float(squares[idx])
+            slot[2] += n_rows
+    scored: list[tuple[float, float, str]] = []
+    for gene, (total, total_sq, count) in stats.items():
+        denom = max(1.0, count)
+        mean = total / denom
+        variance = max(0.0, total_sq / denom - mean * mean)
+        scored.append((variance, mean, gene))
+    scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    keep = max(1, min(int(max_genes), len(scored)))
+    return [gene for _, _, gene in scored[:keep]]
+
+
+def _features_from_blocks(blocks: list[_PseudoSpatialBlock], selected_genes: list[str]) -> np.ndarray:
+    frames: list[np.ndarray] = []
+    for block in blocks:
+        gene_to_index = {gene: idx for idx, gene in enumerate(block.gene_names)}
+        present_pairs = [(out_idx, gene_to_index[gene]) for out_idx, gene in enumerate(selected_genes) if gene in gene_to_index]
+        values = np.zeros((block.expression.shape[0], len(selected_genes)), dtype=np.float32)
+        if present_pairs:
+            out_indices = np.asarray([pair[0] for pair in present_pairs], dtype=np.int64)
+            local_indices = np.asarray([pair[1] for pair in present_pairs], dtype=np.int64)
+            values[:, out_indices] = block.expression[:, local_indices].toarray().astype(np.float32)
+        frames.append(np.log1p(np.maximum(values, 0.0)).astype(np.float32))
+    return np.vstack(frames).astype(np.float32) if frames else np.zeros((0, len(selected_genes)), dtype=np.float32)
 
 
 def build_pseudo_spatial_targets(
