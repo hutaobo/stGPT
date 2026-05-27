@@ -822,14 +822,16 @@ def _prediction_frame(
         }
     )
     if full_probabilities:
-        for idx in range(structure_prob.shape[1]):
-            frame[f"structure_prob_{idx}"] = structure_prob[:, idx]
-        for idx in range(x_prob.shape[1]):
-            frame[f"x_bin_prob_{idx}"] = x_prob[:, idx]
-        for idx in range(y_prob.shape[1]):
-            frame[f"y_bin_prob_{idx}"] = y_prob[:, idx]
-        for idx in range(niche_prob.shape[1]):
-            frame[f"niche_prob_{idx}"] = niche_prob[:, idx]
+        probability_frame = pd.concat(
+            [
+                pd.DataFrame(structure_prob, columns=[f"structure_prob_{idx}" for idx in range(structure_prob.shape[1])]),
+                pd.DataFrame(x_prob, columns=[f"x_bin_prob_{idx}" for idx in range(x_prob.shape[1])]),
+                pd.DataFrame(y_prob, columns=[f"y_bin_prob_{idx}" for idx in range(y_prob.shape[1])]),
+                pd.DataFrame(niche_prob, columns=[f"niche_prob_{idx}" for idx in range(niche_prob.shape[1])]),
+            ],
+            axis=1,
+        )
+        frame = pd.concat([frame, probability_frame], axis=1)
     return frame
 
 
