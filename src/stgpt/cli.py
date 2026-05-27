@@ -29,6 +29,7 @@ from .image_qc import inspect_images as inspect_images_backend
 from .image_qc import precompute_image_embeddings
 from .inference import embed_anndata, write_embeddings_table
 from .inspection import inspect_registry as inspect_registry_backend
+from .pseudo_spatial import predict_pseudo_spatial, train_pseudo_spatial_prior
 from .qc import validate_data
 from .spatho import run_spatho_export
 from .training import initialize_random_checkpoint
@@ -145,6 +146,70 @@ def train(
     if result.get("metrics"):
         printable["last_metrics"] = result["metrics"][-1]
     typer.echo(json.dumps(printable, indent=2))
+
+
+@app.command("train-pseudo-spatial")
+def train_pseudo_spatial_command(
+    config: Annotated[Path, typer.Option("--config", "-c", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    preset: Annotated[str | None, typer.Option("--preset")] = None,
+    max_steps: Annotated[int, typer.Option("--max-steps", min=1)] = 2000,
+    n_spatial_bins: Annotated[int, typer.Option("--n-spatial-bins", min=2)] = 32,
+    n_niches: Annotated[int, typer.Option("--n-niches", min=1)] = 32,
+    max_genes: Annotated[int, typer.Option("--max-genes", min=1)] = 512,
+    d_model: Annotated[int, typer.Option("--d-model", min=16)] = 256,
+    hidden_layers: Annotated[int, typer.Option("--hidden-layers", min=1)] = 2,
+    dropout: Annotated[float, typer.Option("--dropout", min=0.0, max=0.9)] = 0.1,
+    batch_size: Annotated[int, typer.Option("--batch-size", min=1)] = 512,
+    learning_rate: Annotated[float, typer.Option("--learning-rate", min=1e-8)] = 3e-4,
+    weight_decay: Annotated[float, typer.Option("--weight-decay", min=0.0)] = 0.01,
+    device: Annotated[str, typer.Option("--device")] = "auto",
+    num_workers: Annotated[int, typer.Option("--num-workers", min=0)] = 0,
+    seed: Annotated[int | None, typer.Option("--seed")] = None,
+    data_parallel: Annotated[bool, typer.Option("--data-parallel/--single-gpu")] = True,
+) -> None:
+    result = train_pseudo_spatial_prior(
+        config,
+        output_dir=output,
+        preset=preset,
+        max_steps=max_steps,
+        n_spatial_bins=n_spatial_bins,
+        n_niches=n_niches,
+        max_genes=max_genes,
+        d_model=d_model,
+        hidden_layers=hidden_layers,
+        dropout=dropout,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        device=device,
+        num_workers=num_workers,
+        seed=seed,
+        data_parallel=data_parallel,
+    )
+    typer.echo(json.dumps(result, indent=2))
+
+
+@app.command("predict-pseudo-spatial")
+def predict_pseudo_spatial_command(
+    model: Annotated[Path, typer.Option("--model", "-m", exists=True)],
+    input: Annotated[Path, typer.Option("--input", "-i", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    reference_regions: Annotated[Path | None, typer.Option("--reference-regions", exists=True)] = None,
+    batch_size: Annotated[int, typer.Option("--batch-size", min=1)] = 1024,
+    device: Annotated[str, typer.Option("--device")] = "auto",
+    full_probabilities: Annotated[bool, typer.Option("--full-probabilities/--top1-only")] = True,
+) -> None:
+    result = predict_pseudo_spatial(
+        model,
+        input,
+        output=output,
+        reference_regions=reference_regions,
+        batch_size=batch_size,
+        device=device,
+        full_probabilities=full_probabilities,
+    )
+    typer.echo(json.dumps(result, indent=2))
 
 
 @app.command("init-random-checkpoint")

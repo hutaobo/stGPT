@@ -40,6 +40,13 @@ Track the foundation-model, schema-first runtime, evidence graph, and reproducib
 Plan the contour- and region-level foundation-model target and spatho downstream artifact contract.
 :::
 
+:::{grid-item-card} Pseudo-spatial Prior
+:link: pseudo_spatial_prior
+:link-type: doc
+
+Train an expression-only spatial prior and project single-cell data into tissue structure, bins, niches, and reference coordinates.
+:::
+
 :::{grid-item-card} RFC 0001
 :link: rfcs/0001-contour-native-evidence-foundation-model
 :link-type: doc
@@ -65,5 +72,6 @@ tutorials/atera_xeniumslide_data_foundation
 strategy
 foundation_model_requirements
 contour_region_foundation_model
+pseudo_spatial_prior
 rfcs/0001-contour-native-evidence-foundation-model
 ```

@@ -6,6 +6,7 @@ from .evaluation import evaluate
 from .foundation import package_model
 from .inference import embed_anndata
 from .models import ImageGeneSTGPT
+from .pseudo_spatial import PseudoSpatialPrior, predict_pseudo_spatial, train_pseudo_spatial_prior
 from .qc import validate_data, validate_training_case
 from .runtime import embed_cells, embed_regions, evaluate_checkpoint, export_spatho_artifacts
 from .spatho import (
@@ -28,6 +29,7 @@ __all__ = [
     "ImageGeneSTGPT",
     "ModelConfig",
     "PatchManifestRow",
+    "PseudoSpatialPrior",
     "REGION_EMBEDDING_REQUIRED_COLUMNS",
     "SplitConfig",
     "SpathoExportResult",
@@ -43,8 +45,10 @@ __all__ = [
     "export_spatho_artifacts",
     "load_xenium_case",
     "package_model",
+    "predict_pseudo_spatial",
     "run_spatho_export",
     "train",
+    "train_pseudo_spatial_prior",
     "validate_data",
     "validate_training_case",
 ]
