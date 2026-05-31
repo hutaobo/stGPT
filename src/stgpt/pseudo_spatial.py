@@ -1076,7 +1076,7 @@ def _move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
 
 
 def _resolve_device(name: str) -> torch.device:
-    normalized = str(name).lower()
+    normalized = str(name).strip().lower()
     if normalized == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if normalized == "cuda" and not torch.cuda.is_available():

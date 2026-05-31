@@ -11,7 +11,12 @@ from typer.testing import CliRunner
 from stgpt.cli import app
 from stgpt.config import DataConfig, ModelConfig, SplitConfig, StGPTConfig, TrainingConfig
 from stgpt.data import build_training_case
-from stgpt.pseudo_spatial import build_pseudo_spatial_targets, predict_pseudo_spatial, train_pseudo_spatial_prior
+from stgpt.pseudo_spatial import (
+    _resolve_device,
+    build_pseudo_spatial_targets,
+    predict_pseudo_spatial,
+    train_pseudo_spatial_prior,
+)
 
 
 def _config(tmp_path: Path) -> StGPTConfig:
@@ -48,6 +53,10 @@ def test_build_pseudo_spatial_targets(tmp_path: Path) -> None:
     assert targets["y_bin"].between(0, 3).all()
     assert len(meta["structure_names"]) == 3
     assert len(meta["niche_names"]) == 3
+
+
+def test_resolve_device_strips_cli_whitespace() -> None:
+    assert _resolve_device(" cpu\r\n").type == "cpu"
 
 
 def test_train_and_predict_pseudo_spatial_prior(tmp_path: Path) -> None:
