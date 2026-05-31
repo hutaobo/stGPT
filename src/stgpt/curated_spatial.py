@@ -499,6 +499,10 @@ def build_curated_spatial_targets(
     structure_values = regions["trainable_standard_name"].fillna("unknown").astype(str)
     parent_ids, parent_names = pd.factorize(parent_values, sort=True)
     structure_ids, structure_names = pd.factorize(structure_values, sort=True)
+    structure_parent_ids = [
+        int(pd.Series(parent_ids[structure_ids == idx]).mode().iloc[0])
+        for idx in range(len(structure_names))
+    ]
     x_bin = _rank_bins_by_group(regions["x"].to_numpy(dtype=np.float64), _slide_groups(regions), int(n_spatial_bins))
     y_bin = _rank_bins_by_group(regions["y"].to_numpy(dtype=np.float64), _slide_groups(regions), int(n_spatial_bins))
     target_frame = regions.copy()
@@ -511,6 +515,7 @@ def build_curated_spatial_targets(
     meta = {
         "parent_names": [str(item) for item in parent_names],
         "structure_names": [str(item) for item in structure_names],
+        "structure_parent_ids": structure_parent_ids,
         "n_spatial_bins": int(n_spatial_bins),
         "label_policy": _label_policy(excluded_case_leaves=excluded_case_leaves),
         "slide_group_key": _slide_group_key(regions),
@@ -913,8 +918,16 @@ def _curated_prediction_frame(
     parent_names = [str(item) for item in payload["parent_names"]]
     structure_names = [str(item) for item in payload["structure_names"]]
     cell_ids = adata.obs["cell_id"].astype(str).to_numpy() if "cell_id" in adata.obs.columns else adata.obs_names.astype(str).to_numpy()
-    p_top = parent_prob.argmax(axis=1)
-    s_top = structure_prob.argmax(axis=1)
+    structure_parent_ids = np.asarray(payload.get("structure_parent_ids", []), dtype=np.int64)
+    if structure_parent_ids.shape[0] == structure_prob.shape[1]:
+        joint_structure = structure_prob * parent_prob[:, structure_parent_ids]
+        s_top = joint_structure.argmax(axis=1)
+        p_top = structure_parent_ids[s_top]
+        structure_joint_probability = joint_structure[np.arange(len(s_top)), s_top]
+    else:
+        p_top = parent_prob.argmax(axis=1)
+        s_top = structure_prob.argmax(axis=1)
+        structure_joint_probability = structure_prob[np.arange(len(s_top)), s_top] * parent_prob[np.arange(len(p_top)), p_top]
     x_top = x_prob.argmax(axis=1)
     y_top = y_prob.argmax(axis=1)
     frame = pd.DataFrame(
@@ -924,6 +937,7 @@ def _curated_prediction_frame(
             "parent_probability": parent_prob[np.arange(len(p_top)), p_top],
             "structure_top1": [structure_names[int(idx)] for idx in s_top],
             "structure_probability": structure_prob[np.arange(len(s_top)), s_top],
+            "structure_joint_probability": structure_joint_probability,
             "x_bin_top1": x_top.astype(np.int64),
             "x_bin_probability": x_prob[np.arange(len(x_top)), x_top],
             "y_bin_top1": y_top.astype(np.int64),
@@ -1007,6 +1021,7 @@ def _save_curated_checkpoint(
             "feature_std": feature_std.reshape(-1).astype(float).tolist(),
             "parent_names": target_meta["parent_names"],
             "structure_names": target_meta["structure_names"],
+            "structure_parent_ids": [int(item) for item in target_meta["structure_parent_ids"]],
             "n_spatial_bins": target_meta["n_spatial_bins"],
             "label_policy": target_meta["label_policy"],
             "gene_name_key": cfg.data.gene_name_key,
