@@ -146,6 +146,7 @@ def audit_curated_structures(
     output: str | Path,
     case_column: str = "case_leaf",
     root_base: str | Path | None = None,
+    excluded_case_leaves: list[str] | None = None,
 ) -> dict[str, Any]:
     manifest_path = Path(manifest).expanduser()
     frame = pd.read_csv(manifest_path)
@@ -153,12 +154,24 @@ def audit_curated_structures(
         raise ValueError(f"Manifest is missing case column {case_column!r}: {manifest_path}")
     base = Path(root_base).expanduser() if root_base is not None else manifest_path.parent
     rows: list[dict[str, Any]] = []
+    excluded = {str(item) for item in excluded_case_leaves or []}
     for _, row in frame.iterrows():
         raw_case = str(row[case_column]).strip()
         case_root = Path(raw_case)
         if not case_root.is_absolute():
             case_root = base / case_root
-        rows.append(_curated_case_inventory(case_root, manifest_row=row.to_dict()))
+        inventory_row = _curated_case_inventory(case_root, manifest_row=row.to_dict())
+        if case_root.name in excluded:
+            inventory_row["excluded_by_policy"] = True
+            inventory_row["raw_usable_structure_regions"] = inventory_row.get("usable_structure_regions", 0)
+            inventory_row["raw_usable_structure_classes"] = inventory_row.get("usable_structure_classes", 0)
+            inventory_row["raw_usable_parent_classes"] = inventory_row.get("usable_parent_classes", 0)
+            inventory_row["usable_structure_regions"] = 0
+            inventory_row["usable_structure_classes"] = 0
+            inventory_row["usable_parent_classes"] = 0
+        else:
+            inventory_row["excluded_by_policy"] = False
+        rows.append(inventory_row)
 
     inventory = pd.DataFrame(rows)
     out = Path(output).expanduser()
@@ -175,6 +188,7 @@ def audit_curated_structures(
         **summary,
         "inventory_csv": str(csv_path),
         "inventory_json": str(json_path),
+        "excluded_case_leaves": sorted(excluded),
     }
 
 
@@ -196,6 +210,7 @@ def train_curated_spatial_prior(
     num_workers: int = 0,
     seed: int | None = None,
     data_parallel: bool = True,
+    excluded_case_leaves: list[str] | None = None,
 ) -> dict[str, Any]:
     cfg = StGPTConfig.from_file(config, preset=preset) if isinstance(config, (str, Path)) else config.apply_preset(preset)
     seed_value = int(cfg.training.seed if seed is None else seed)
@@ -207,6 +222,7 @@ def train_curated_spatial_prior(
         cfg,
         max_genes=max_genes,
         n_spatial_bins=n_spatial_bins,
+        excluded_case_leaves=excluded_case_leaves,
     )
     features_raw = training_data.features_raw
     feature_mean = features_raw.mean(axis=0, keepdims=True).astype(np.float32)
@@ -376,6 +392,7 @@ def train_curated_spatial_prior(
         "n_parents": int(len(target_meta["parent_names"])),
         "n_structures": int(len(target_meta["structure_names"])),
         "n_spatial_bins": int(n_spatial_bins),
+        "excluded_case_leaves": sorted(str(item) for item in excluded_case_leaves or []),
     }
 
 
@@ -467,6 +484,7 @@ def build_curated_spatial_targets(
     region_table: pd.DataFrame,
     *,
     n_spatial_bins: int,
+    excluded_case_leaves: list[str] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     regions = region_table.reset_index(drop=True).copy()
     required = {"x", "y", "standard_parent_class", "trainable_standard_name"}
@@ -494,7 +512,7 @@ def build_curated_spatial_targets(
         "parent_names": [str(item) for item in parent_names],
         "structure_names": [str(item) for item in structure_names],
         "n_spatial_bins": int(n_spatial_bins),
-        "label_policy": _label_policy(),
+        "label_policy": _label_policy(excluded_case_leaves=excluded_case_leaves),
         "slide_group_key": _slide_group_key(regions),
     }
     return target_frame, meta
@@ -572,8 +590,9 @@ def _build_curated_training_data(
     *,
     max_genes: int,
     n_spatial_bins: int,
+    excluded_case_leaves: list[str] | None,
 ) -> _CuratedTrainingData:
-    blocks = _curated_processed_corpus_blocks(cfg)
+    blocks = _curated_processed_corpus_blocks(cfg, excluded_case_leaves=excluded_case_leaves)
     selected_genes = _select_genes_from_blocks(blocks, max_genes=max_genes)
     features_raw = _features_from_blocks(blocks, selected_genes)
     region_table = pd.concat([block.region_table for block in blocks], ignore_index=True)
@@ -584,7 +603,11 @@ def _build_curated_training_data(
         region_table=region_table,
         region_expression=sparse.csr_matrix((len(region_table), 0), dtype=np.float32),
     )
-    target_frame, target_meta = build_curated_spatial_targets(region_table, n_spatial_bins=n_spatial_bins)
+    target_frame, target_meta = build_curated_spatial_targets(
+        region_table,
+        n_spatial_bins=n_spatial_bins,
+        excluded_case_leaves=excluded_case_leaves,
+    )
     if len(target_frame) != features_raw.shape[0]:
         raise ValueError("Curated target filtering changed row count after feature construction.")
     return _CuratedTrainingData(
@@ -598,7 +621,11 @@ def _build_curated_training_data(
     )
 
 
-def _curated_processed_corpus_blocks(cfg: StGPTConfig) -> list[_PseudoSpatialBlock]:
+def _curated_processed_corpus_blocks(
+    cfg: StGPTConfig,
+    *,
+    excluded_case_leaves: list[str] | None,
+) -> list[_PseudoSpatialBlock]:
     if cfg.data.mode != "corpus":
         raise ValueError("Curated spatial prior currently requires data.mode='corpus'.")
     roots = _configured_dataset_roots(cfg.data)
@@ -606,12 +633,16 @@ def _curated_processed_corpus_blocks(cfg: StGPTConfig) -> list[_PseudoSpatialBlo
         raise FileNotFoundError("data.mode='corpus' requires data.dataset_roots or data.dataset_manifest.")
     blocks: list[_PseudoSpatialBlock] = []
     skipped: list[str] = []
+    excluded = {str(item) for item in excluded_case_leaves or []}
     for idx, root in enumerate(roots):
         resolved = _resolve_processed_xenium_slide_root(root)
         if resolved is None:
             raise FileNotFoundError(f"Processed XeniumSlide corpus root is missing xenium_slide.zarr: {root}")
         case_root, slide_store = resolved
         slide_id = case_root.name or f"slide_{idx}"
+        if slide_id in excluded:
+            skipped.append(slide_id)
+            continue
         slide_cfg = _slide_corpus_item_config(cfg, case_root=case_root, slide_store=slide_store, slide_id=slide_id, index=idx)
         data = slide_cfg.data.model_copy(
             update={
@@ -818,7 +849,7 @@ def _unprefixed_id(value: Any) -> str:
     return text.split("::", 1)[1] if "::" in text else text
 
 
-def _label_policy() -> dict[str, Any]:
+def _label_policy(*, excluded_case_leaves: list[str] | None = None) -> dict[str, Any]:
     return {
         "source": CURATED_STRUCTURE_FILENAME,
         "trainable_name_column": "trainable_standard_name",
@@ -826,6 +857,7 @@ def _label_policy() -> dict[str, Any]:
         "excluded_trainable_name": IGNORE_LABEL,
         "usable_confidence_tiers": sorted(USABLE_CONFIDENCE_TIERS),
         "standard_needs_review": False,
+        "excluded_case_leaves": sorted(str(item) for item in excluded_case_leaves or []),
     }
 
 

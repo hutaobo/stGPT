@@ -219,8 +219,15 @@ def audit_curated_structures_command(
     output: Annotated[Path, typer.Option("--output", "-o")],
     case_column: Annotated[str, typer.Option("--case-column")] = "case_leaf",
     root_base: Annotated[Path | None, typer.Option("--root-base")] = None,
+    exclude_case_leaf: Annotated[list[str] | None, typer.Option("--exclude-case-leaf")] = None,
 ) -> None:
-    result = audit_curated_structures(manifest, output=output, case_column=case_column, root_base=root_base)
+    result = audit_curated_structures(
+        manifest,
+        output=output,
+        case_column=case_column,
+        root_base=root_base,
+        excluded_case_leaves=exclude_case_leaf,
+    )
     typer.echo(json.dumps(result, indent=2))
 
 
@@ -242,6 +249,7 @@ def train_curated_spatial_prior_command(
     num_workers: Annotated[int, typer.Option("--num-workers", min=0)] = 0,
     seed: Annotated[int | None, typer.Option("--seed")] = None,
     data_parallel: Annotated[bool, typer.Option("--data-parallel/--single-gpu")] = True,
+    exclude_case_leaf: Annotated[list[str] | None, typer.Option("--exclude-case-leaf")] = None,
 ) -> None:
     result = train_curated_spatial_prior(
         config,
@@ -260,6 +268,7 @@ def train_curated_spatial_prior_command(
         num_workers=num_workers,
         seed=seed,
         data_parallel=data_parallel,
+        excluded_case_leaves=exclude_case_leaf,
     )
     typer.echo(json.dumps(result, indent=2))
 
