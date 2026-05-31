@@ -1,0 +1,48 @@
+case_name: l3_20260507_43case_curated_structure_prior
+data:
+  mode: corpus
+  output_dir: ${STGPT_OUTPUT_ROOT}/pilot_runs/l3_20260507_43case/curated_structure_prior_43case_20260531/case
+  dataset_manifest: ${STGPT_XENIUM_SLIDES}/training_manifest_l3.csv
+  dataset_root_base: ${STGPT_XENIUM_SLIDES}
+  dataset_manifest_case_column: case_leaf
+  batch_id: l3_20260507_43case
+  stain: H&E
+  min_cells_per_region: 1
+  include_structure_context: false
+model:
+  d_model: 64
+  n_heads: 4
+  n_layers: 2
+  dim_feedforward: 128
+  max_genes: 512
+  n_expression_bins: 32
+  image_size: 64
+  max_cells_per_region: 16
+  n_prototypes: 0
+  use_expression_values: true
+  use_image_context: false
+  use_spatial_context: false
+  use_structure_context: false
+  use_cell_context: false
+training:
+  batch_size: 512
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  max_steps: 5000
+  mask_probability: 0.15
+  neighborhood_k: 8
+  image_gene_loss_weight: 0.0
+  neighborhood_loss_weight: 0.0
+  structure_loss_weight: 0.0
+  prototype_loss_weight: 0.0
+  output_dir: ${STGPT_OUTPUT_ROOT}/pilot_runs/l3_20260507_43case/curated_structure_prior_43case_20260531/train
+  device: cuda
+  num_workers: 8
+  seed: 13
+split:
+  strategy: slide_holdout
+  group_key: corpus_slide_id
+  train_fraction: 0.7
+  val_fraction: 0.15
+  test_fraction: 0.15
+  seed: 11

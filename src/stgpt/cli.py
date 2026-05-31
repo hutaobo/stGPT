@@ -14,6 +14,7 @@ from . import __version__
 from .annotation import annotate_regions as annotate_regions_backend
 from .config import StGPTConfig
 from .contour_store import pack_contour_patches
+from .curated_spatial import audit_curated_structures, predict_curated_spatial_prior, train_curated_spatial_prior
 from .data import build_training_manifest
 from .evaluation import evaluate as evaluate_model
 from .evidence import (
@@ -201,6 +202,79 @@ def predict_pseudo_spatial_command(
     full_probabilities: Annotated[bool, typer.Option("--full-probabilities/--top1-only")] = True,
 ) -> None:
     result = predict_pseudo_spatial(
+        model,
+        input,
+        output=output,
+        reference_regions=reference_regions,
+        batch_size=batch_size,
+        device=device,
+        full_probabilities=full_probabilities,
+    )
+    typer.echo(json.dumps(result, indent=2))
+
+
+@app.command("audit-curated-structures")
+def audit_curated_structures_command(
+    manifest: Annotated[Path, typer.Option("--manifest", "-m", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    case_column: Annotated[str, typer.Option("--case-column")] = "case_leaf",
+    root_base: Annotated[Path | None, typer.Option("--root-base")] = None,
+) -> None:
+    result = audit_curated_structures(manifest, output=output, case_column=case_column, root_base=root_base)
+    typer.echo(json.dumps(result, indent=2))
+
+
+@app.command("train-curated-spatial-prior")
+def train_curated_spatial_prior_command(
+    config: Annotated[Path, typer.Option("--config", "-c", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    preset: Annotated[str | None, typer.Option("--preset")] = None,
+    max_steps: Annotated[int, typer.Option("--max-steps", min=1)] = 2000,
+    n_spatial_bins: Annotated[int, typer.Option("--n-spatial-bins", min=2)] = 32,
+    max_genes: Annotated[int, typer.Option("--max-genes", min=1)] = 512,
+    d_model: Annotated[int, typer.Option("--d-model", min=16)] = 256,
+    hidden_layers: Annotated[int, typer.Option("--hidden-layers", min=1)] = 2,
+    dropout: Annotated[float, typer.Option("--dropout", min=0.0, max=0.9)] = 0.1,
+    batch_size: Annotated[int, typer.Option("--batch-size", min=1)] = 512,
+    learning_rate: Annotated[float, typer.Option("--learning-rate", min=1e-8)] = 3e-4,
+    weight_decay: Annotated[float, typer.Option("--weight-decay", min=0.0)] = 0.01,
+    device: Annotated[str, typer.Option("--device")] = "auto",
+    num_workers: Annotated[int, typer.Option("--num-workers", min=0)] = 0,
+    seed: Annotated[int | None, typer.Option("--seed")] = None,
+    data_parallel: Annotated[bool, typer.Option("--data-parallel/--single-gpu")] = True,
+) -> None:
+    result = train_curated_spatial_prior(
+        config,
+        output_dir=output,
+        preset=preset,
+        max_steps=max_steps,
+        n_spatial_bins=n_spatial_bins,
+        max_genes=max_genes,
+        d_model=d_model,
+        hidden_layers=hidden_layers,
+        dropout=dropout,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        device=device,
+        num_workers=num_workers,
+        seed=seed,
+        data_parallel=data_parallel,
+    )
+    typer.echo(json.dumps(result, indent=2))
+
+
+@app.command("predict-curated-spatial-prior")
+def predict_curated_spatial_prior_command(
+    model: Annotated[Path, typer.Option("--model", "-m", exists=True)],
+    input: Annotated[Path, typer.Option("--input", "-i", exists=True)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+    reference_regions: Annotated[Path | None, typer.Option("--reference-regions", exists=True)] = None,
+    batch_size: Annotated[int, typer.Option("--batch-size", min=1)] = 1024,
+    device: Annotated[str, typer.Option("--device")] = "auto",
+    full_probabilities: Annotated[bool, typer.Option("--full-probabilities/--top1-only")] = True,
+) -> None:
+    result = predict_curated_spatial_prior(
         model,
         input,
         output=output,

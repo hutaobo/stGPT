@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 from .config import AblationMode, DataConfig, ModelConfig, SplitConfig, StGPTConfig, TrainingConfig
+from .curated_spatial import (
+    CuratedSpatialPrior,
+    audit_curated_structures,
+    predict_curated_spatial_prior,
+    train_curated_spatial_prior,
+)
 from .data import build_training_manifest, load_xenium_case
 from .evaluation import evaluate
 from .foundation import package_model
@@ -25,6 +31,7 @@ __all__ = [
     "__version__",
     "AblationMode",
     "CELL_EMBEDDING_REQUIRED_COLUMNS",
+    "CuratedSpatialPrior",
     "DataConfig",
     "ImageGeneSTGPT",
     "ModelConfig",
@@ -36,6 +43,7 @@ __all__ = [
     "STRUCTURE_SUMMARY_REQUIRED_COLUMNS",
     "StGPTConfig",
     "TrainingConfig",
+    "audit_curated_structures",
     "build_training_manifest",
     "embed_anndata",
     "embed_cells",
@@ -46,8 +54,10 @@ __all__ = [
     "load_xenium_case",
     "package_model",
     "predict_pseudo_spatial",
+    "predict_curated_spatial_prior",
     "run_spatho_export",
     "train",
+    "train_curated_spatial_prior",
     "train_pseudo_spatial_prior",
     "validate_data",
     "validate_training_case",
