@@ -96,8 +96,15 @@ def main() -> int:
         print(json.dumps({"status": "dry_run", "manifest": str(manifest_path), **inventory}, indent=2))
         return 0
 
-    embeddings = extract_embeddings(manifest, cfg)
-    np.save(out / "embeddings.npy", embeddings.astype(np.float32))
+    embeddings_path = out / "embeddings.npy"
+    if embeddings_path.exists():
+        embeddings = np.load(embeddings_path)
+        if embeddings.shape[0] != len(manifest):
+            embeddings = extract_embeddings(manifest, cfg)
+            np.save(embeddings_path, embeddings.astype(np.float32))
+    else:
+        embeddings = extract_embeddings(manifest, cfg)
+        np.save(embeddings_path, embeddings.astype(np.float32))
 
     fine_result = run_linear_probe(
         embeddings,
@@ -313,7 +320,7 @@ def run_linear_probe(
     y_test = encoder.transform(y_text[test_idx_seen])
     clf = make_pipeline(
         StandardScaler(),
-        LogisticRegression(max_iter=3000, class_weight="balanced", solver="lbfgs", multi_class="auto"),
+        LogisticRegression(max_iter=3000, class_weight="balanced", solver="lbfgs"),
     )
     clf.fit(X[train_idx], y_train)
     pred = clf.predict(X[test_idx_seen])
