@@ -30,6 +30,7 @@ class ProbeConfig:
     tiles_root: str
     output: str
     model_id: str
+    backend: str
     batch_size: int
     num_workers: int
     device: str
@@ -45,6 +46,7 @@ def main() -> int:
     parser.add_argument("--tiles-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model-id", default="owkin/phikon-v2")
+    parser.add_argument("--backend", choices=("auto", "transformers", "timm_uni"), default="auto")
     parser.add_argument("--batch-size", type=int, default=96)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--device", default="cuda")
@@ -60,6 +62,7 @@ def main() -> int:
         tiles_root=str(args.tiles_root),
         output=str(args.output),
         model_id=args.model_id,
+        backend=args.backend,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         device=args.device,
@@ -221,9 +224,10 @@ def usable_curated_labels(labels: pd.DataFrame) -> pd.Series:
 
 
 class TileDataset:
-    def __init__(self, frame: pd.DataFrame, processor: Any) -> None:
+    def __init__(self, frame: pd.DataFrame, transform: Any, *, mode: str) -> None:
         self.frame = frame.reset_index(drop=True)
-        self.processor = processor
+        self.transform = transform
+        self.mode = mode
 
     def __len__(self) -> int:
         return len(self.frame)
@@ -233,11 +237,31 @@ class TileDataset:
 
         row = self.frame.iloc[index]
         image = Image.open(str(row["image_path"])).convert("RGB")
-        processed = self.processor(images=image, return_tensors="pt")
-        return {"pixel_values": processed["pixel_values"].squeeze(0), "index": index}
+        if self.mode == "transformers":
+            processed = self.transform(images=image, return_tensors="pt")
+            tensor = processed["pixel_values"].squeeze(0)
+        else:
+            tensor = self.transform(image)
+        return {"pixel_values": tensor, "index": index}
 
 
 def extract_embeddings(frame: pd.DataFrame, cfg: ProbeConfig) -> np.ndarray:
+    backend = resolve_backend(cfg)
+    if backend == "timm_uni":
+        return extract_timm_uni_embeddings(frame, cfg)
+    return extract_transformers_embeddings(frame, cfg)
+
+
+def resolve_backend(cfg: ProbeConfig) -> str:
+    if cfg.backend != "auto":
+        return cfg.backend
+    normalized = cfg.model_id.lower()
+    if normalized in {"mahmoodlab/uni", "mahmoodlab/uni2-h"}:
+        return "timm_uni"
+    return "transformers"
+
+
+def extract_transformers_embeddings(frame: pd.DataFrame, cfg: ProbeConfig) -> np.ndarray:
     import torch
     from torch.utils.data import DataLoader
     from transformers import AutoImageProcessor, AutoModel
@@ -249,7 +273,7 @@ def extract_embeddings(frame: pd.DataFrame, cfg: ProbeConfig) -> np.ndarray:
     if device.type == "cuda" and torch.cuda.device_count() > 1:
         model = torch.nn.DataParallel(model)
 
-    dataset = TileDataset(frame, processor)
+    dataset = TileDataset(frame, processor, mode="transformers")
     loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False, num_workers=cfg.num_workers, pin_memory=device.type == "cuda")
     chunks: list[np.ndarray] = []
     with torch.no_grad():
@@ -257,6 +281,39 @@ def extract_embeddings(frame: pd.DataFrame, cfg: ProbeConfig) -> np.ndarray:
             pixel_values = batch["pixel_values"].to(device, non_blocking=True)
             output = model(pixel_values=pixel_values)
             features = pool_model_output(output)
+            features = torch.nn.functional.normalize(features.float(), dim=1)
+            chunks.append(features.cpu().numpy())
+    return np.concatenate(chunks, axis=0)
+
+
+def extract_timm_uni_embeddings(frame: pd.DataFrame, cfg: ProbeConfig) -> np.ndarray:
+    import timm
+    import torch
+    from timm.data import resolve_data_config
+    from timm.data.transforms_factory import create_transform
+    from torch.utils.data import DataLoader
+
+    device = torch.device("cuda" if cfg.device == "cuda" and torch.cuda.is_available() else "cpu")
+    model = timm.create_model(
+        f"hf-hub:{cfg.model_id}",
+        pretrained=True,
+        init_values=1e-5,
+        dynamic_img_size=True,
+    )
+    transform = create_transform(**resolve_data_config(model.pretrained_cfg, model=model))
+    model.eval().to(device)
+    if device.type == "cuda" and torch.cuda.device_count() > 1:
+        model = torch.nn.DataParallel(model)
+
+    dataset = TileDataset(frame, transform, mode="timm")
+    loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=False, num_workers=cfg.num_workers, pin_memory=device.type == "cuda")
+    chunks: list[np.ndarray] = []
+    with torch.no_grad():
+        for batch in loader:
+            pixel_values = batch["pixel_values"].to(device, non_blocking=True)
+            features = model(pixel_values)
+            if isinstance(features, (tuple, list)):
+                features = features[0]
             features = torch.nn.functional.normalize(features.float(), dim=1)
             chunks.append(features.cpu().numpy())
     return np.concatenate(chunks, axis=0)
